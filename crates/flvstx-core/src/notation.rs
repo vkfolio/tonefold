@@ -86,7 +86,14 @@ pub fn format_chords(events: &[ChordEvent], key: &Key, bars: u32, bar_ticks: u32
             out.push_str(" . |");
             continue;
         }
-        let parts: Vec<String> = in_bar.iter().map(|e| format!("{} ({})", e.chord.symbol(), e.chord.roman(key))).collect();
+        let parts: Vec<String> = in_bar
+            .iter()
+            .map(|e| {
+                // Keep the user's spelling when they wrote a symbol (e.g. Bb rather than A#).
+                let sym = if crate::theory::Chord::parse_symbol(&e.symbol).as_ref() == Some(&e.chord) { e.symbol.clone() } else { e.chord.symbol() };
+                format!("{} ({})", sym, e.chord.roman(key))
+            })
+            .collect();
         out.push(' ');
         out.push_str(&parts.join(" "));
         out.push_str(" |");
