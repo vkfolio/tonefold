@@ -3,6 +3,11 @@ name = "flvstx-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+midly.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
