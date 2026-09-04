@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["crates/flvstx-core", "crates/flvstx-ipc", "crates/flvstx-cli", "crates/flvstx-plugin", "xtask"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+authors = ["vigneshaiml@gmail.com"]
+
+[workspace.dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+nih_plug_egui = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+midly = "0.5"
+arc-swap = "1"
+rand = "0.9"
+rand_chacha = "0.9"
+tungstenite = "0.26"
+anyhow = "1"
+thiserror = "2"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

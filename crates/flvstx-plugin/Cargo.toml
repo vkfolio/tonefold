@@ -1,0 +1,12 @@
+[package]
+name = "flvstx-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+crate-type = ["cdylib", "lib"]
+[dependencies]
+nih_plug.workspace = true
+nih_plug_egui.workspace = true
+flvstx-core = { path = "../flvstx-core" }
+arc-swap.workspace = true

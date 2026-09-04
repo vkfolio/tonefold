@@ -1,0 +1,9 @@
+[package]
+name = "flvstx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+flvstx-core = { path = "../flvstx-core" }
+serde_json.workspace = true
+anyhow.workspace = true
