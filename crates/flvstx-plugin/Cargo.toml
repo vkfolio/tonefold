@@ -5,7 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "flvstx-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+standalone = ["nih_plug/standalone"]
 
 [dependencies]
 nih_plug.workspace = true

@@ -109,15 +109,17 @@ impl Drop for AgentClient {
 
 fn run_client(port: u16, store: Arc<Mutex<Store>>, rx: Receiver<Outgoing>, etx: Sender<AgentEvent>, connected: Arc<AtomicBool>, sid: Arc<Mutex<Option<String>>>) {
     let mut backoff = Duration::from_millis(300);
+    // Messages sent before the socket is up are queued and flushed after connecting.
+    let mut pending: Vec<String> = Vec::new();
     loop {
-        // Drain outgoing while disconnected so a Close still terminates us.
         while let Ok(o) = rx.try_recv() {
-            if matches!(o, Outgoing::Close) {
-                return;
+            match o {
+                Outgoing::Close => return,
+                Outgoing::Text(t) => pending.push(t),
             }
         }
         let url = format!("ws://127.0.0.1:{port}");
-        let socket = match tungstenite::connect(&url) {
+        let mut socket = match tungstenite::connect(&url) {
             Ok((s, _)) => s,
             Err(_) => {
                 std::thread::sleep(backoff);
@@ -128,6 +130,9 @@ fn run_client(port: u16, store: Arc<Mutex<Store>>, rx: Receiver<Outgoing>, etx: 
         backoff = Duration::from_millis(300);
         connected.store(true, Ordering::Relaxed);
         let _ = etx.send(AgentEvent::Connected);
+        for t in pending.drain(..) {
+            let _ = socket.send(Message::Text(t.into()));
+        }
         let reason = serve(socket, &store, &rx, &etx, &sid);
         connected.store(false, Ordering::Relaxed);
         let _ = etx.send(AgentEvent::Disconnected { reason: reason.clone() });
@@ -248,7 +253,19 @@ pub fn spawn_agent(port: u16) -> std::io::Result<std::process::Child> {
         c.arg(&entry);
         c
     };
-    cmd.arg("--port").arg(port.to_string()).current_dir(&dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit());
+    // GUI hosts (FL Studio) have no console; inherited stdio handles would be invalid, so log to a file.
+    let log_dir = flvstx_core::midi::default_export_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(log_dir.join("agent.log")).ok();
+    let (out, err) = match log {
+        Some(f) => (std::process::Stdio::from(f.try_clone().unwrap_or(f)), std::process::Stdio::null()),
+        None => (std::process::Stdio::null(), std::process::Stdio::null()),
+    };
+    let err = match std::fs::OpenOptions::new().create(true).append(true).open(log_dir.join("agent.log")) {
+        Ok(f) => std::process::Stdio::from(f),
+        Err(_) => err,
+    };
+    cmd.arg("--port").arg(port.to_string()).current_dir(&dir).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

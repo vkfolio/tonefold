@@ -62,9 +62,18 @@ impl GenParams {
 
 /// Generates a clip for `role` in `section` and stores it in the session (unless the track is locked).
 pub fn generate_track(session: &mut Session, role: TrackRole, section_id: &str, params: &GenParams) -> Result<Clip> {
-    let section = session.section(section_id).cloned().ok_or_else(|| Error::UnknownSection(section_id.into()))?;
+    let mut section = session.section(section_id).cloned().ok_or_else(|| Error::UnknownSection(section_id.into()))?;
     if section.chords.is_empty() && role != TrackRole::Drums {
-        return Err(Error::Parse(format!("section '{}' has no chords yet; set chords first", section.id)));
+        // No harmony yet: pick an idiomatic progression for the style so the first click always works.
+        let style = params.style(session).to_string();
+        let seed = params.seed.unwrap_or(session.seed);
+        let sug = chords::suggest_progressions(session, Some(&style), 1, seed);
+        let notation = sug.first().map(|(sym, _)| sym.clone()).ok_or_else(|| Error::Parse("no chord suggestion available".into()))?;
+        let events = crate::notation::parse_chords(&notation, &session.key, section.bars, session.bar_ticks())?;
+        section.chords = events.clone();
+        if let Some(sec) = session.section_mut(section_id) {
+            sec.chords = events;
+        }
     }
     let mut notes = match role {
         TrackRole::Chords => chords::render_chords(session, &section, params),

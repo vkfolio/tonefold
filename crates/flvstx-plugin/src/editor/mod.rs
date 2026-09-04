@@ -525,7 +525,8 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
             ui.add_space(4.0);
         }
-        ui.separator();
+    });
+    ui.horizontal(|ui| {
         let sec = ui_state.selected_section.clone();
         if ui.add_enabled(sec.is_some(), egui::Button::new("Generate all")).on_hover_text("Rule engine: chords, melody, bass, drums for the selected section").clicked() {
             let mut g = shared.lock_store();

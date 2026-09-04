@@ -4,8 +4,8 @@
 //! transport (or an internal clock). GUI thread: egui editor (chat, arrangement, piano roll).
 //! IPC thread: WebSocket bridge to the agent sidecar, serving tool calls against the session store.
 
-mod editor;
-mod state;
+pub mod editor;
+pub mod state;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
@@ -28,10 +28,42 @@ pub struct Flvstx {
     preview_off_at: Option<(u32, u8, u8)>,
 }
 
+/// Which tracks this instance sends to its MIDI output. FL routes one plugin per MIDI port, so run one
+/// instance per instrument (Chords → keys, Melody → lead, …) and pick the track here; "All" sends
+/// everything on channels 1/2/3/10 (use Patcher or a multi-timbral instrument).
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSelect {
+    #[id = "all"]
+    All,
+    #[id = "chords"]
+    Chords,
+    #[id = "melody"]
+    Melody,
+    #[id = "bass"]
+    Bass,
+    #[id = "drums"]
+    Drums,
+}
+
+impl OutputSelect {
+    fn allows(self, channel: u8) -> bool {
+        match self {
+            OutputSelect::All => true,
+            OutputSelect::Chords => channel == 0,
+            OutputSelect::Melody => channel == 1,
+            OutputSelect::Bass => channel == 2,
+            OutputSelect::Drums => channel == 9,
+        }
+    }
+}
+
 #[derive(Params)]
 pub struct FlvstxParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
+    /// MIDI output track filter (see [`OutputSelect`]).
+    #[id = "output"]
+    pub output: EnumParam<OutputSelect>,
     /// The whole session + chat as JSON (kept in sync by the GUI thread).
     #[persist = "flvstx-state"]
     state_json: Arc<RwLock<String>>,
@@ -40,7 +72,11 @@ pub struct FlvstxParams {
 impl Default for Flvstx {
     fn default() -> Self {
         Self {
-            params: Arc::new(FlvstxParams { editor_state: EguiState::from_size(1180, 720), state_json: Arc::new(RwLock::new(String::new())) }),
+            params: Arc::new(FlvstxParams {
+                editor_state: EguiState::from_size(1380, 820),
+                output: EnumParam::new("MIDI output", OutputSelect::All),
+                state_json: Arc::new(RwLock::new(String::new())),
+            }),
             shared: Shared::new(flvstx_core::Session::default()),
             sample_rate: 44100.0,
             pos_ticks: 0.0,
@@ -119,6 +155,7 @@ impl Plugin for Flvstx {
         while context.next_event().is_some() {}
 
         let n = buffer.samples() as u32;
+        let output = self.params.output.value();
         let buf = shared.playback.load();
         let sync = shared.sync_to_host.load(Ordering::Relaxed);
         let want_play = if sync { host_playing } else { shared.playing.load(Ordering::Relaxed) };
@@ -173,9 +210,11 @@ impl Plugin for Flvstx {
                     Some(e) if (e.tick as f64) < end && e.tick >= buf.loop_start && e.tick < buf.loop_end => {
                         let timing = (((e.tick as f64 - start) / tps).floor().max(0.0) as u32).min(n.saturating_sub(1));
                         if e.on {
-                            context.send_event(NoteEvent::NoteOn { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: e.vel });
-                            if self.sounding.len() < 64 {
-                                self.sounding.push((e.channel, e.pitch));
+                            if output.allows(e.channel) {
+                                context.send_event(NoteEvent::NoteOn { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: e.vel });
+                                if self.sounding.len() < 64 {
+                                    self.sounding.push((e.channel, e.pitch));
+                                }
                             }
                         } else {
                             context.send_event(NoteEvent::NoteOff { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: 0.0 });
@@ -234,8 +273,10 @@ impl Plugin for Flvstx {
             if let Some((_, c, p)) = self.preview_off_at.take() {
                 context.send_event(NoteEvent::NoteOff { timing: 0, voice_id: None, channel: c, note: p, velocity: 0.0 });
             }
-            context.send_event(NoteEvent::NoteOn { timing: 0, voice_id: None, channel: ch, note: pitch, velocity: vel });
-            self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
+            if output.allows(ch) {
+                context.send_event(NoteEvent::NoteOn { timing: 0, voice_id: None, channel: ch, note: pitch, velocity: vel });
+                self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
+            }
         }
         if let Some((remaining, ch, p)) = self.preview_off_at {
             if remaining <= n {
