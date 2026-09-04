@@ -727,8 +727,11 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "flvstx-core",
+ "flvstx-ipc",
  "nih_plug",
  "nih_plug_egui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
