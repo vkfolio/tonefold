@@ -20,9 +20,9 @@ if ($p.ExitCode -ne 0) { throw "elevated copy failed (exit $($p.ExitCode))" }
 
 # Verify: a running FL Studio locks the plugin files and the copy fails silently.
 $srcClapHash = (Get-FileHash $clap).Hash
-$srcVst3Hash = (Get-FileHash (Join-Path $vst3 "Contents_64-win\FLVSTX.vst3")).Hash
+$srcVst3Hash = (Get-FileHash (Join-Path $vst3 "Contents\x86_64-win\FLVSTX.vst3")).Hash
 $dstClapHash = (Get-FileHash "$clapDir\FLVSTX.clap").Hash
-$dstVst3Path = "$vst3Dir\FLVSTX.vst3\Contents_64-win\FLVSTX.vst3"
+$dstVst3Path = "$vst3Dir\FLVSTX.vst3\Contents\x86_64-win\FLVSTX.vst3"
 $dstVst3Hash = if (Test-Path $dstVst3Path) { (Get-FileHash $dstVst3Path).Hash } else { "" }
 if ($srcClapHash -ne $dstClapHash -or $srcVst3Hash -ne $dstVst3Hash) {
     $fl = Get-Process FL64* -ErrorAction SilentlyContinue
