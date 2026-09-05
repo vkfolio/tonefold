@@ -61,6 +61,8 @@ pub struct EditorState {
     pub model: String,
     show_arrangement: bool,
     add_kind: TrackRole,
+    /// Output channel chosen in the top bar this frame (applied through the param setter).
+    pending_output: Option<i32>,
 }
 
 /// One alternative produced by "Suggest": optional chords (for chord layers) plus the notes.
@@ -112,6 +114,14 @@ pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
 }
 
 impl EditorState {
+    fn setter_output(&mut self, setter: &nih_plug::prelude::ParamSetter) {
+        if let Some(v) = self.pending_output.take() {
+            setter.begin_set_parameter(&self.params.output);
+            setter.set_parameter(&self.params.output, v);
+            setter.end_set_parameter(&self.params.output);
+        }
+    }
+
     fn agent_connected(&self) -> bool {
         self.agent.lock().ok().and_then(|a| a.as_ref().map(|c| c.is_connected())).unwrap_or(false)
     }
@@ -420,6 +430,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         model: "default".into(),
         show_arrangement: false,
         add_kind: TrackRole::Arpeggio,
+        pending_output: None,
     };
     create_egui_editor(
         params.editor_state.clone(),
@@ -428,7 +439,8 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             apply_ui_scale(ctx, state.ui_scale);
             state.applied_scale = state.ui_scale;
         },
-        move |ctx, _setter, st| {
+        move |ctx, setter, st| {
+            st.setter_output(setter);
             if (st.applied_scale - st.ui_scale).abs() > 0.01 {
                 apply_ui_scale(ctx, st.ui_scale);
                 st.applied_scale = st.ui_scale;
@@ -526,6 +538,30 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                 Ok(())
             });
         }
+        ui.separator();
+        // Which layer this plugin instance sends to its MIDI output (one instance per FL instrument).
+        let cur = st.params.output.value();
+        let (label, choices): (String, Vec<(i32, String)>) = {
+            let g = shared.lock_store();
+            let mut v: Vec<(i32, String)> = vec![(0, "All layers".into())];
+            let mut seen = std::collections::BTreeSet::new();
+            for t in &g.session.tracks {
+                if seen.insert(t.channel) {
+                    let names: Vec<&str> = g.session.tracks.iter().filter(|x| x.channel == t.channel).map(|x| x.name.as_str()).collect();
+                    v.push((t.channel as i32 + 1, format!("{} (ch {})", names.join(" + "), t.channel + 1)));
+                }
+            }
+            let label = v.iter().find(|(c, _)| *c == cur).map(|(_, l)| l.clone()).unwrap_or_else(|| format!("ch {cur}"));
+            (label, v)
+        };
+        ui.label("Send");
+        egui::ComboBox::from_id_salt("send-layer").width(150.0 * st.ui_scale).selected_text(label).show_ui(ui, |ui| {
+            for (c, l) in choices {
+                if ui.selectable_label(cur == c, l).clicked() {
+                    st.pending_output = Some(c);
+                }
+            }
+        }).response.on_hover_text("Which layer this plugin instance plays through its MIDI output. Add one FLVSTX per instrument and pick that instrument's layer here.");
         ui.separator();
         ui.checkbox(&mut st.show_arrangement, "Arrangement").on_hover_text("Show the layers × sections grid");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

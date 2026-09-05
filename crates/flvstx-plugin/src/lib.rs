@@ -31,34 +31,27 @@ pub struct Flvstx {
     seen_preview_epoch: u64,
 }
 
-/// Which MIDI channel this instance sends. Every layer has its own channel (shown in the layer list),
-/// so run one instance per FL instrument and pick that layer's channel here; "All" sends everything.
-#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputSelect {
-    #[id = "all"]
-    All,
-    #[id = "ch1"] Ch1, #[id = "ch2"] Ch2, #[id = "ch3"] Ch3, #[id = "ch4"] Ch4,
-    #[id = "ch5"] Ch5, #[id = "ch6"] Ch6, #[id = "ch7"] Ch7, #[id = "ch8"] Ch8,
-    #[id = "ch9"] Ch9, #[id = "ch10"] Ch10, #[id = "ch11"] Ch11, #[id = "ch12"] Ch12,
-    #[id = "ch13"] Ch13, #[id = "ch14"] Ch14, #[id = "ch15"] Ch15, #[id = "ch16"] Ch16,
+/// Label for the MIDI output parameter: "All" or "ch N: Layer" looked up in the shared song.
+fn output_label(v: i32) -> String {
+    if v <= 0 {
+        return "All layers".to_string();
+    }
+    let ch = (v - 1) as u8;
+    let names: Vec<String> = state::global_shared().lock_store().session.tracks.iter().filter(|t| t.channel == ch).map(|t| t.name.clone()).collect();
+    if names.is_empty() { format!("ch {v}: (no layer)") } else { format!("ch {v}: {}", names.join(" + ")) }
 }
 
-impl OutputSelect {
-    fn allows(self, channel: u8) -> bool {
-        match self {
-            OutputSelect::All => true,
-            other => (other as usize as u8) == channel + 1,
-        }
-    }
+fn output_allows(v: i32, channel: u8) -> bool {
+    v <= 0 || (v - 1) as u8 == channel
 }
 
 #[derive(Params)]
 pub struct FlvstxParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
-    /// MIDI output track filter (see [`OutputSelect`]).
+    /// MIDI output filter: 0 = all layers, 1..16 = only the layer(s) on that MIDI channel.
     #[id = "output"]
-    pub output: EnumParam<OutputSelect>,
+    pub output: IntParam,
     /// The whole session + chat as JSON (kept in sync by the GUI thread).
     #[persist = "flvstx-state"]
     state_json: Arc<RwLock<String>>,
@@ -69,7 +62,13 @@ impl Default for Flvstx {
         Self {
             params: Arc::new(FlvstxParams {
                 editor_state: EguiState::from_size(1500, 900),
-                output: EnumParam::new("MIDI output", OutputSelect::All),
+                output: IntParam::new("MIDI output", 0, IntRange::Linear { min: 0, max: 16 })
+                    .with_value_to_string(std::sync::Arc::new(output_label))
+                    .with_string_to_value(std::sync::Arc::new(|s: &str| {
+                        let t = s.trim().to_ascii_lowercase();
+                        if t.starts_with("all") { return Some(0); }
+                        t.trim_start_matches("ch").trim().split(':').next().and_then(|n| n.trim().parse::<i32>().ok())
+                    })),
                 state_json: Arc::new(RwLock::new(String::new())),
             }),
             shared: state::global_shared(),
@@ -215,7 +214,7 @@ impl Plugin for Flvstx {
                     Some(e) if (e.tick as f64) < end && e.tick >= buf.loop_start && e.tick < buf.loop_end => {
                         let timing = (((e.tick as f64 - start) / tps).floor().max(0.0) as u32).min(n.saturating_sub(1));
                         if e.on {
-                            if output.allows(e.channel) {
+                            if output_allows(output, e.channel) {
                                 context.send_event(NoteEvent::NoteOn { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: e.vel });
                                 if self.sounding.len() < 64 {
                                     self.sounding.push((e.channel, e.pitch));
@@ -280,7 +279,7 @@ impl Plugin for Flvstx {
             if let Some((_, c, p)) = self.preview_off_at.take() {
                 context.send_event(NoteEvent::NoteOff { timing: 0, voice_id: None, channel: c, note: p, velocity: 0.0 });
             }
-            if output.allows(ch) {
+            if output_allows(output, ch) {
                 context.send_event(NoteEvent::NoteOn { timing: 0, voice_id: None, channel: ch, note: pitch, velocity: vel });
                 self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
             }
