@@ -46,31 +46,24 @@ You should now have:
    Use CLAP in FL Studio; VST3 MIDI output is unreliable in FL.
 5. Close Manage plugins.
 
-## Part 3 · Set up a project for the song (every new song)
+## Part 3 · Set up a project (every new song)
 
-1. **File > New**. Set the project tempo to **100** (click the BPM display and type 100).
-2. Add the plugin: **Add > FLVSTX** (or press F8 for the Plugin picker and drag FLVSTX in). It appears in the
-   Channel Rack. Its window opens: chat on the left, piano roll in the middle, Layers on the right.
-3. Add an instrument to hear it. Two choices:
-   - **A VST/CLAP instrument** (Analog Lab, Pigments, BBC SO, any third-party synth). These have a wrapper
-     **MIDI** tab, so routing is two clicks (step 4).
-   - **A built-in FL instrument** (FLEX, Sytrus, FPC…). These have no MIDI tab, so use **Patcher** (step 5).
-4. Routing with a VST/CLAP instrument:
-   - In the FLVSTX window click the small **gear** icon at the top-left of the plugin window, open the
-     **MIDI** tab, set **Output port** to **1**.
-   - In the instrument's window, same gear icon, **MIDI** tab: set **Input port** to **1**.
-   Both must show the same number.
-5. Routing with a built-in instrument via Patcher:
-   - **Add > Patcher**. In its map view right-click the empty area: **Add plugin > FLVSTX**; right-click again:
-     **Add plugin > FLEX** (or FPC for drums).
-   - Drag from FLVSTX's **MIDI out** connector to FLEX's **MIDI in** connector, and from FLEX's audio out to the
-     "To FL Studio" output block so you hear it.
-   - Double-click the FLVSTX block to open its window. Everything below works the same inside Patcher.
-   - For several instruments, add them all in the same Patcher, with **one FLVSTX block per instrument**.
-     In each FLVSTX window use the **Send** dropdown in the top bar to pick the layer that instrument should
-     play (for example *Melody (ch 2)* for FLEX, *Drums (ch 10)* for FPC). All blocks show the same song.
-6. Text too small or too big? Top right of the FLVSTX window, the **A** menu picks the size. Drag the
-   bottom-right corner of the piano roll area to make the window bigger.
+FLVSTX has its own built-in sounds (a General MIDI bank with pianos, strings, synths, drum kits), so you
+can compose and listen without routing anything.
+
+1. **File > New**. Set the project tempo to **100**.
+2. **Add > FLVSTX** (the CLAP version). Its window opens: chat on the left, piano roll in the middle,
+   Layers on the right. Press Play later and you hear every layer through this channel.
+3. Each layer has an instrument: select a layer, then use the instrument dropdown in the piano roll's
+   toolbar (next to the layer name). Sensible defaults are chosen per layer and style (music box for a
+   kids' melody, electric piano for chords, finger bass, drum kit for drums).
+4. **Built-in sound** (bottom bar, next to Panic) is on by default, with a volume slider. Leave it on.
+5. No Patcher, ports or MIDI channels are needed. (Advanced: the **Send** dropdown and the wrapper MIDI
+   ports still exist if you want to drive a VST instrument live; untick Built-in sound then.)
+6. Text size: the **A** menu at the top right. Resize the window by dragging its edges or the corner.
+
+You can also run FLVSTX without FL Studio: Start Menu > **FLVSTX** opens the standalone app with the same
+built-in sounds; export or drag layers into FL later.
 
 ## Part 4 · Set the key and style
 
@@ -146,32 +139,22 @@ Option B, by hand:
 
 ## Part 9 · Get every layer into FL Studio
 
-Two ways; use both if you like.
+**Way 1, drag and drop (recommended).** Add your real instruments in the Channel Rack (FLEX for melody,
+a piano for chords, a bass, FPC for drums…). In the FLVSTX Layers panel every layer has a small **⇗**
+handle. Drag the handle and drop it:
+- onto an instrument's button in the **Channel Rack**: FL creates the notes for that channel, or
+- onto that instrument's open **piano roll**: the notes land there (this replaces what the pattern
+  already had, so use an empty pattern).
+The handle turns into a **✓** once written. A drag writes the whole song for that layer; hold **Shift**
+while dragging to write only the selected section.
 
-**Way 1, the script (exact notes into FL's piano roll):**
-1. In FLVSTX press **Export song** (bottom bar). It writes `%LOCALAPPDATA%\FLVSTX\export\`: `latest.json`,
-   `latest.mid`, and one `.mid` per layer (`melody.mid`, `chords.mid`, `bass.mid`, `drums.mid`, `arpeggio.mid`…).
-   The chat panel confirms.
-2. In FL Studio add one instrument per layer (FLEX for melody, a piano for chords, a bass synth, FPC for
-   drums, another FLEX for the arp…). In the Channel Rack, click each one to open it.
-3. For each instrument: open its **piano roll** (click the channel's name, then press F7 or use the
-   Channel Rack piano-roll button). In the piano roll menu choose **Tools > Scripts > FLVSTX Import**.
-   A small dialog appears: pick the layer in the **Track** dropdown (it lists the layer ids), leave
-   *Replace existing notes* off, press **Accept**. The notes appear.
-4. Repeat for every layer. The song lands as one long pattern per channel; that is fine for a first pass.
-   If you prefer one pattern per section, run **Export section** for each section instead and import into a
-   new pattern each time.
+**Way 2, export + script.** Press **Export song** (bottom bar). It writes `%LOCALAPPDATA%\FLVSTX\export\`:
+`latest.mid` and one `.mid` per layer. In the target channel's piano roll choose **Tools > Scripts >
+FLVSTX Import**, pick the layer, press Accept. Or drag a `.mid` from the export folder (**Open folder**)
+onto a Channel Rack slot.
 
-**Way 2, drag the files:** press **Open folder** and drag `melody.mid` from the Explorer window onto an
-instrument in the Channel Rack. FL creates a channel with the notes. Dropping onto the piano roll works but
-replaces what is there.
-
-Once imported, the notes are ordinary FL notes: edit, quantize, or humanize them further in FL.
-
-**Live monitoring without exporting:** keep FLVSTX routed to instruments through MIDI ports (Part 3).
-To drive several instruments at once, add more FLVSTX instances, one per instrument, each with its
-*MIDI output* parameter set to that layer's channel; each instance keeps its own session, so use export for
-the final song.
+Once imported, the notes are ordinary FL notes on your instruments; untick **Built-in sound** in FLVSTX
+(or mute its channel) so you don't hear both.
 
 ## Part 10 · Save and come back later
 

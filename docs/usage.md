@@ -37,6 +37,15 @@ motif, the final chorus is the biggest, builds roll into the next section, intro
 
 The chat header has a model picker (default / sonnet / opus) that applies to the next message.
 
+## Built-in sounds, drag-out, standalone
+
+FLVSTX renders its own audio with a General MIDI soundfont (GeneralUser GS, downloaded by the installer to
+`%LOCALAPPDATA%\FLVSTX\soundfont`). Each layer has an instrument (piano roll toolbar dropdown; the composer
+can set it too); the **Built-in sound** toggle and volume are in the bottom bar. Only one plugin instance
+per project renders audio. Layers are dragged into FL Studio with the **⇗** handle in the Layers panel
+(drop on a Channel Rack instrument or an open piano roll; Shift = selected section only). The installer also
+puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
+
 ## Workflow
 
 1. Add FLVSTX as an instrument in the Channel Rack. Open it and type a brief in the chat
