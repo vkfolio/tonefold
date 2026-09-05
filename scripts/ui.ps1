@@ -1,4 +1,4 @@
-# Tiny UI automation helper for the standalone window: move, click, type, key, shot.
+﻿# Tiny UI automation helper for the standalone window: move, click, type, key, shot.
 param([string[]]$Steps)
 $env:TMP = Join-Path (Split-Path $PSScriptRoot -Parent) "target"; $env:TEMP = $env:TMP
 Add-Type -AssemblyName System.Windows.Forms
@@ -35,7 +35,7 @@ while ($i -lt $Steps.Length) {
     "drag"  { $x=[int]$Steps[$i]; $y=[int]$Steps[$i+1]; $x2=[int]$Steps[$i+2]; $y2=[int]$Steps[$i+3]; $i+=4
               [W]::SetCursorPos($x,$y) | Out-Null; Start-Sleep -Milliseconds 80
               [W]::mouse_event(2,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 100
-              $steps=12; for ($k=1; $k -le $steps; $k++) { $cx=$x+($x2-$x)*$k/$steps; $cy=$y+($y2-$y)*$k/$steps; [W]::SetCursorPos([int]$cx,[int]$cy) | Out-Null; Start-Sleep -Milliseconds 25 }
+              $nsteps=12; for ($k=1; $k -le $nsteps; $k++) { $cx=$x+($x2-$x)*$k/$nsteps; $cy=$y+($y2-$y)*$k/$nsteps; [W]::SetCursorPos([int]$cx,[int]$cy) | Out-Null; Start-Sleep -Milliseconds 25 }
               Start-Sleep -Milliseconds 100; [W]::mouse_event(4,0,0,0,[UIntPtr]::Zero); Start-Sleep -Milliseconds 250 }
     "type"  { $t=$Steps[$i]; $i++; [System.Windows.Forms.SendKeys]::SendWait($t); Start-Sleep -Milliseconds 200 }
     "key"   { $k=$Steps[$i]; $i++; [System.Windows.Forms.SendKeys]::SendWait("{$k}"); Start-Sleep -Milliseconds 200 }
@@ -52,3 +52,4 @@ while ($i -lt $Steps.Length) {
               Write-Host "shot $f $($b.Width)x$($b.Height)" }
   }
 }
+

@@ -73,7 +73,7 @@ impl Default for Flvstx {
     fn default() -> Self {
         Self {
             params: Arc::new(FlvstxParams {
-                editor_state: EguiState::from_size(1380, 820),
+                editor_state: EguiState::from_size(1500, 900),
                 output: EnumParam::new("MIDI output", OutputSelect::All),
                 state_json: Arc::new(RwLock::new(String::new())),
             }),

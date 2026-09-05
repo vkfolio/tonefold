@@ -6,13 +6,16 @@ mod piano_roll;
 
 use crate::state::{ChatRole, Persisted, Shared};
 use crate::FlvstxParams;
+use flvstx_core::generate::{generate_track, GenParams};
 use flvstx_core::ops::dispatch;
+use flvstx_core::{ChordEvent, Clip, ClipSource, Note};
 use flvstx_core::theory::{ScaleKind, NOTE_NAMES_SHARP};
 use flvstx_core::{Key, TrackRole};
 use flvstx_ipc::{AgentClient, AgentEvent, DEFAULT_PORT};
 use nih_plug::prelude::Editor;
 use nih_plug_egui::egui::{self, Color32, RichText};
 use nih_plug_egui::create_egui_editor;
+use nih_plug_egui::resizable_window::ResizableWindow;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -38,6 +41,63 @@ pub struct EditorState {
     last_loaded_hash: u64,
     status: String,
     spawn_attempted_at: Option<std::time::Instant>,
+    /// Text/widget scale (1.0 = egui default). Defaults from the Windows DPI.
+    pub ui_scale: f32,
+    applied_scale: f32,
+    /// Alternative takes for the last "Suggest" (layered workflow).
+    takes: Vec<Take>,
+    take_role: Option<TrackRole>,
+    take_section: String,
+    take_idx: usize,
+    take_seed: u64,
+}
+
+/// One alternative produced by "Suggest": optional chords (for the chords layer) plus the notes.
+#[derive(Debug, Clone)]
+struct Take {
+    label: String,
+    chords: Option<Vec<ChordEvent>>,
+    notes: Vec<Note>,
+}
+
+#[cfg(windows)]
+fn system_dpi_scale() -> f32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetDpiForSystem() -> u32;
+    }
+    // SAFETY: plain Win32 call with no arguments.
+    let dpi = unsafe { GetDpiForSystem() };
+    // DPI-unaware hosts report 96; assume a typical 150% laptop display then (the picker persists the user's choice).
+    if dpi <= 96 { 1.5 } else { (dpi as f32 / 96.0).clamp(1.0, 2.5) }
+}
+#[cfg(not(windows))]
+fn system_dpi_scale() -> f32 {
+    1.0
+}
+
+/// Scales fonts and spacing (instead of pixels_per_point, which the host wrapper owns).
+pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::dark();
+    let base: [(egui::TextStyle, f32); 5] = [
+        (egui::TextStyle::Small, 10.0),
+        (egui::TextStyle::Body, 13.0),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Heading, 18.0),
+        (egui::TextStyle::Monospace, 12.5),
+    ];
+    for (ts, size) in base {
+        if let Some(f) = style.text_styles.get_mut(&ts) {
+            f.size = size * scale;
+        }
+    }
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0) * scale;
+    style.spacing.button_padding = egui::vec2(5.0, 2.0) * scale;
+    style.spacing.interact_size = egui::vec2(40.0, 18.0) * scale;
+    style.spacing.icon_width = 14.0 * scale;
+    style.spacing.combo_width = 100.0 * scale;
+    ctx.set_style(style);
 }
 
 impl EditorState {
@@ -107,6 +167,99 @@ impl EditorState {
         }
     }
 
+    /// Produces three alternatives for one layer, constrained by the layers that already exist
+    /// (melody -> harmonize chords to it; chords -> melody over them; both -> bass/drums fit both).
+    fn suggest(&mut self, shared: &Shared, role: TrackRole, section: &str) {
+        let session = shared.lock_store().session.clone();
+        let Some(sec) = session.section(section).cloned() else { return };
+        if session.track(role).locked {
+            shared.push_chat(ChatRole::System, format!("{} is locked; unlock it (L) to get suggestions", role.name()));
+            return;
+        }
+        self.take_seed = self.take_seed.wrapping_add(7);
+        let base_seed = self.take_seed;
+        let has_melody = session.clip(TrackRole::Melody, &sec.id).map(|c| !c.notes.is_empty()).unwrap_or(false);
+        let mut takes = Vec::new();
+        match role {
+            TrackRole::Chords => {
+                let cands: Vec<(String, Vec<ChordEvent>)> = if has_melody {
+                    let melody = session.clip(TrackRole::Melody, &sec.id).unwrap().notes.clone();
+                    flvstx_core::generate::harmonize::harmonize(&session.key, &melody, sec.bars, session.bar_ticks(), None, 3)
+                        .into_iter()
+                        .map(|h| (format!("fits melody - {}", h.label), h.events))
+                        .collect()
+                } else {
+                    flvstx_core::generate::chords::suggest_progressions(&session, None, 3, base_seed)
+                        .into_iter()
+                        .filter_map(|(sym, rom)| flvstx_core::notation::parse_chords(&sym, &session.key, sec.bars, session.bar_ticks()).ok().map(|ev| (rom, ev)))
+                        .collect()
+                };
+                for (label, events) in cands {
+                    let mut clone = session.clone();
+                    clone.section_mut(&sec.id).unwrap().chords = events.clone();
+                    clone.track_mut(TrackRole::Chords).locked = false;
+                    if let Ok(clip) = generate_track(&mut clone, TrackRole::Chords, &sec.id, &GenParams { seed: Some(base_seed), ..Default::default() }) {
+                        takes.push(Take { label, chords: Some(events), notes: clip.notes });
+                    }
+                }
+            }
+            TrackRole::Melody => {
+                for (i, contour) in ["arch", "rise", "wave"].iter().enumerate() {
+                    let mut clone = session.clone();
+                    clone.track_mut(TrackRole::Melody).locked = false;
+                    let p = GenParams { seed: Some(base_seed + i as u64 * 13), contour: Some(contour.to_string()), ..Default::default() };
+                    if let Ok(clip) = generate_track(&mut clone, TrackRole::Melody, &sec.id, &p) {
+                        takes.push(Take { label: format!("{contour} contour"), chords: None, notes: clip.notes });
+                    }
+                }
+            }
+            TrackRole::Bass => {
+                for (i, pat) in [None, Some("root5"), Some("push")].iter().enumerate() {
+                    let mut clone = session.clone();
+                    clone.track_mut(TrackRole::Bass).locked = false;
+                    let p = GenParams { seed: Some(base_seed + i as u64 * 17), pattern: pat.map(|s| s.to_string()), ..Default::default() };
+                    if let Ok(clip) = generate_track(&mut clone, TrackRole::Bass, &sec.id, &p) {
+                        takes.push(Take { label: pat.map(|s| format!("{s} pattern")).unwrap_or_else(|| "style default".into()), chords: None, notes: clip.notes });
+                    }
+                }
+            }
+            TrackRole::Drums => {
+                for (i, (label, de)) in [("as is", 0.0f32), ("lighter", -0.25), ("busier", 0.25)].iter().enumerate() {
+                    let mut clone = session.clone();
+                    clone.track_mut(TrackRole::Drums).locked = false;
+                    let p = GenParams { seed: Some(base_seed + i as u64 * 19), energy: Some((sec.energy + de).clamp(0.05, 1.0)), ..Default::default() };
+                    if let Ok(clip) = generate_track(&mut clone, TrackRole::Drums, &sec.id, &p) {
+                        takes.push(Take { label: label.to_string(), chords: None, notes: clip.notes });
+                    }
+                }
+            }
+        }
+        if takes.is_empty() {
+            shared.push_chat(ChatRole::System, format!("no {} suggestions could be made for {}", role.name(), sec.name));
+            return;
+        }
+        self.takes = takes;
+        self.take_role = Some(role);
+        self.take_section = sec.id.clone();
+        self.take_idx = 0;
+        self.apply_take(shared, 0);
+    }
+
+    fn apply_take(&mut self, shared: &Shared, idx: usize) {
+        let (Some(role), Some(take)) = (self.take_role, self.takes.get(idx).cloned()) else { return };
+        self.take_idx = idx;
+        let section = self.take_section.clone();
+        let mut g = shared.lock_store();
+        let _ = g.mutate(|s| {
+            if let Some(ch) = &take.chords {
+                if let Some(sec) = s.section_mut(&section) {
+                    sec.chords = ch.clone();
+                }
+            }
+            s.set_clip(role, &section, Clip::new(take.notes.clone(), ClipSource::Generated { seed: 0, params: serde_json::json!({ "take": take.label }) }))
+        });
+    }
+
     fn poll_agent(&mut self, shared: &Shared) {
         let mut events = Vec::new();
         if let Ok(g) = self.agent.lock() {
@@ -164,6 +317,9 @@ impl EditorState {
             let current = serde_json::to_string(&shared.to_persisted()).unwrap_or_default();
             if crate::hash_str(&current) != h {
                 if let Ok(p) = serde_json::from_str::<Persisted>(&json) {
+                    if let Some(sc) = p.ui_scale {
+                        self.ui_scale = sc;
+                    }
                     shared.load_persisted(p);
                 }
             }
@@ -174,7 +330,8 @@ impl EditorState {
         }
         if rev != self.last_persisted_revision {
             self.last_persisted_revision = rev;
-            let p = shared.to_persisted();
+            let mut p = shared.to_persisted();
+            p.ui_scale = Some(self.ui_scale);
             if let Ok(s) = serde_json::to_string(&p) {
                 self.last_loaded_hash = crate::hash_str(&s);
                 if let Ok(mut w) = self.params.state_json.write() {
@@ -210,24 +367,34 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         input: String::new(),
         turn_active: false,
         streaming: String::new(),
-        piano: piano_roll::PianoRollView::default(),
+        piano: { let mut p = piano_roll::PianoRollView::default(); p.row_h = 11.0 * system_dpi_scale(); p },
         last_persisted_revision: u64::MAX,
         last_loaded_hash: 0,
         status: String::new(),
         spawn_attempted_at: None,
+        ui_scale: system_dpi_scale(),
+        applied_scale: 0.0,
+        takes: Vec::new(),
+        take_role: None,
+        take_section: String::new(),
+        take_idx: 0,
+        take_seed: 100,
     };
     let shared_for_persist = shared.clone();
     create_egui_editor(
         params.editor_state.clone(),
         state,
-        move |ctx, _state| {
-            let mut style = (*ctx.style()).clone();
-            style.visuals = egui::Visuals::dark();
-            style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-            ctx.set_style(style);
+        move |ctx, state| {
+            apply_ui_scale(ctx, state.ui_scale);
+            state.applied_scale = state.ui_scale;
             let _ = &shared_for_persist;
         },
         move |ctx, _setter, st| {
+            if (st.applied_scale - st.ui_scale).abs() > 0.01 {
+                apply_ui_scale(ctx, st.ui_scale);
+                st.applied_scale = st.ui_scale;
+                st.piano.row_h = 11.0 * st.ui_scale;
+            }
             st.poll_agent(&shared);
             st.sync_state(&shared);
             draw(ctx, st, &shared);
@@ -237,17 +404,22 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
 }
 
 fn draw(ctx: &egui::Context, st: &mut EditorState, shared: &Shared) {
+    let scale = st.ui_scale;
     egui::TopBottomPanel::top("top").show(ctx, |ui| {
         top_bar(ui, st, shared);
         sections_strip(ui, shared);
     });
-    egui::SidePanel::left("chat").default_width(360.0).min_width(260.0).show(ctx, |ui| {
-        chat::show(ui, st, shared);
-    });
     egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
         transport(ui, st, shared);
     });
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::SidePanel::left("chat").resizable(true).default_width(360.0 * scale).min_width(240.0 * scale).max_width(560.0 * scale).show(ctx, |ui| {
+        chat::show(ui, st, shared);
+    });
+    // Central area: piano roll, with nih-plug's resize corner (the host owns the window size; the
+    // corner asks the host to resize).
+    let egui_state = st.params.editor_state.clone();
+    let min = egui::vec2(900.0, 560.0);
+    ResizableWindow::new("flvstx-window").min_size(min).show(ctx, &egui_state, |ui| {
         piano_roll::show(ui, &mut st.piano, shared);
     });
 }
@@ -311,6 +483,15 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let sizes = [("S", 1.0f32), ("M", 1.25), ("L", 1.5), ("XL", 1.8), ("XXL", 2.2)];
+            let cur = sizes.iter().min_by(|a, b| (a.1 - st.ui_scale).abs().partial_cmp(&(b.1 - st.ui_scale).abs()).unwrap()).map(|s| s.0).unwrap_or("M");
+            egui::ComboBox::from_id_salt("ui-size").width(48.0 * st.ui_scale).selected_text(format!("A {cur}")).show_ui(ui, |ui| {
+                for (label, v) in sizes {
+                    if ui.selectable_label((v - st.ui_scale).abs() < 0.01, label).clicked() {
+                        st.ui_scale = v;
+                    }
+                }
+            });
             let host_tempo = f32::from_bits(shared.host_tempo_bits.load(Ordering::Relaxed));
             ui.label(RichText::new(format!("host {:.0} BPM {}", host_tempo, if shared.host_playing.load(Ordering::Relaxed) { "▶" } else { "■" })).small().weak());
             if !st.status.is_empty() {
@@ -528,18 +709,52 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     });
     ui.horizontal(|ui| {
         let sec = ui_state.selected_section.clone();
+        ui.label(RichText::new("Suggest").weak());
+        for role in [TrackRole::Melody, TrackRole::Chords, TrackRole::Bass, TrackRole::Drums] {
+            let locked = shared.lock_store().session.track(role).locked;
+            let hint = match role {
+                TrackRole::Melody => "3 melody takes over the current chords (or free if none)",
+                TrackRole::Chords => "3 progressions fitted to the melody (or idiomatic ones if no melody)",
+                TrackRole::Bass => "3 bass lines following the chords and leaving room for the melody",
+                TrackRole::Drums => "3 grooves at different densities",
+            };
+            let btn = egui::Button::new(RichText::new(role.name()).color(if locked { Color32::GRAY } else { track_color(role) }));
+            if ui.add_enabled(sec.is_some() && !locked, btn).on_hover_text(hint).clicked() {
+                st.suggest(shared, role, sec.as_deref().unwrap());
+                if let Ok(mut u) = shared.ui.lock() {
+                    u.selected_track = role;
+                }
+            }
+        }
+        if !st.takes.is_empty() && st.take_role.is_some() && sec.as_deref() == Some(st.take_section.as_str()) {
+            ui.separator();
+            ui.label(RichText::new(format!("{} takes:", st.take_role.unwrap().name())).weak());
+            for i in 0..st.takes.len() {
+                let label = format!("{} - {}", i + 1, st.takes[i].label);
+                if ui.add(egui::SelectableLabel::new(st.take_idx == i, label)).clicked() && st.take_idx != i {
+                    st.apply_take(shared, i);
+                }
+            }
+            if ui.small_button("More").on_hover_text("three new takes").clicked() {
+                let role = st.take_role.unwrap();
+                st.suggest(shared, role, sec.as_deref().unwrap());
+            }
+            if ui.small_button("Keep").on_hover_text("lock this layer so later suggestions leave it alone").clicked() {
+                let role = st.take_role.unwrap();
+                let mut g = shared.lock_store();
+                let _ = g.mutate(|s| {
+                    s.track_mut(role).locked = true;
+                    Ok(())
+                });
+                st.takes.clear();
+                st.take_role = None;
+            }
+        }
+        ui.separator();
         if ui.add_enabled(sec.is_some(), egui::Button::new("Generate all")).on_hover_text("Rule engine: chords, melody, bass, drums for the selected section").clicked() {
             let mut g = shared.lock_store();
             let seed = g.session.seed.wrapping_add(g.revision);
             match dispatch(&mut g, "generate_all", &serde_json::json!({ "section": sec.clone().unwrap(), "params": { "seed": seed } })) {
-                Ok(_) => {}
-                Err(e) => shared.push_chat(ChatRole::System, format!("generate: {e}")),
-            }
-        }
-        if ui.add_enabled(sec.is_some(), egui::Button::new(format!("Regen {}", ui_state.selected_track.name()))).clicked() {
-            let mut g = shared.lock_store();
-            let seed = g.session.seed.wrapping_add(g.revision);
-            match dispatch(&mut g, "generate", &serde_json::json!({ "track": ui_state.selected_track.name(), "section": sec.clone().unwrap(), "params": { "seed": seed } })) {
                 Ok(_) => {}
                 Err(e) => shared.push_chat(ChatRole::System, format!("generate: {e}")),
             }

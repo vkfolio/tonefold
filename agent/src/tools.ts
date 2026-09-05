@@ -41,7 +41,7 @@ function wrap(rpc: Rpc, method: string, onCall?: (name: string, input: unknown, 
 
 export const TOOL_NAMES = [
   "get_session", "get_notes", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords",
-  "suggest_chords", "set_notes", "generate", "generate_all", "humanize", "analyze", "set_lyrics", "lock",
+  "suggest_chords", "harmonize", "set_notes", "generate", "generate_all", "humanize", "analyze", "set_lyrics", "lock",
   "clear", "transpose", "undo", "export",
 ];
 
@@ -81,6 +81,12 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
       "Set the chord progression of a section. One bar per '| … |' cell; several chords in a bar split it evenly ('| C Am |'); '.' continues the previous chord ('| C . Am . |' = C for half a bar then Am). Symbols (C, Am7, Fmaj7, G7sus4, Dm7/F) or roman numerals (I, vi, IV, V7, bVII, ii°, V/V) relative to the key. If fewer bars are written than the section has, the pattern repeats.",
       { section: z.string(), notation: z.string() },
       wrap(rpc, "set_chords", onCall),
+    ),
+    tool(
+      "harmonize",
+      "Fit chord progressions to the melody already in a section (melody-first workflow). Scores candidate chords against the melody's notes with functional movement and cadences. Returns up to `count` distinct progressions (simple / diatonic / rich, 1 or 2 chords per bar); pass apply=<index> to set one on the section. Then generate chords/bass/drums.",
+      { section: z.string(), complexity: z.enum(["simple", "diatonic", "rich"]).optional(), count: z.number().int().min(1).max(6).optional(), apply: z.number().int().min(0).optional() },
+      wrap(rpc, "harmonize", onCall),
     ),
     tool("suggest_chords", "Get a few idiomatic 4-bar progressions for the current key and a style, as chord symbols with roman numerals. Use as raw material, then adapt.", { style: z.string().optional(), count: z.number().int().min(1).max(8).optional(), seed: z.number().int().optional() }, wrap(rpc, "suggest_chords", onCall)),
     tool(

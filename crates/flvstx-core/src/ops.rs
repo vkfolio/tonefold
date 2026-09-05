@@ -239,6 +239,37 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             })?;
             Ok(json!({ "ok": true, "chords": out }))
         }
+        "harmonize" => {
+            let section: String = arg(params, "section")?;
+            let complexity: Option<String> = opt(params, "complexity")?;
+            let count: Option<usize> = opt(params, "count")?;
+            let apply: Option<usize> = opt(params, "apply")?;
+            let sess = store.session.clone();
+            let sec = sess.section(&section).cloned().ok_or_else(|| Error::UnknownSection(section.clone()))?;
+            let melody = sess.clip(TrackRole::Melody, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
+            if melody.is_empty() {
+                return Err(Error::Parse(format!("section '{}' has no melody to harmonize; write or generate a melody first (or use suggest_chords)", sec.id)));
+            }
+            let cx = complexity.as_deref().map(crate::generate::harmonize::Complexity::parse);
+            let results = crate::generate::harmonize::harmonize(&sess.key, &melody, sec.bars, sess.bar_ticks(), cx, count.unwrap_or(3).clamp(1, 6));
+            if results.is_empty() {
+                return Err(Error::Parse("could not harmonize".into()));
+            }
+            let listing: Vec<Value> = results
+                .iter()
+                .enumerate()
+                .map(|(i, h)| json!({ "index": i, "label": h.label, "fit": format!("{:.2}", h.score), "chords": format_chords(&h.events, &sess.key, sec.bars, sess.bar_ticks()) }))
+                .collect();
+            if let Some(idx) = apply {
+                let h = results.get(idx).ok_or_else(|| Error::Parse(format!("apply index {idx} out of range")))?;
+                let events = h.events.clone();
+                store.mutate(|s| {
+                    s.section_mut(&sec.id).unwrap().chords = events;
+                    Ok(())
+                })?;
+            }
+            Ok(json!({ "candidates": listing, "applied": apply, "hint": "call again with apply=<index> to set one, then generate chords/bass/drums" }))
+        }
         "suggest_chords" => {
             let style: Option<String> = opt(params, "style")?;
             let count: Option<usize> = opt(params, "count")?;

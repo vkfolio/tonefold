@@ -81,6 +81,8 @@ pub struct Persisted {
     pub selected_section: Option<String>,
     #[serde(default)]
     pub selected_track: Option<TrackRole>,
+    #[serde(default)]
+    pub ui_scale: Option<f32>,
 }
 
 /// Shared between GUI, IPC thread and (read-only, lock-free parts) the audio thread.
@@ -191,6 +193,7 @@ impl Shared {
             agent_session_id: self.agent_session_id.lock().ok().and_then(|s| s.clone()),
             selected_section: ui.selected_section,
             selected_track: Some(ui.selected_track),
+            ui_scale: None,
         }
     }
 

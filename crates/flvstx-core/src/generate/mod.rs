@@ -4,6 +4,7 @@
 pub mod bass;
 pub mod chords;
 pub mod drums;
+pub mod harmonize;
 pub mod kids;
 pub mod melody;
 
@@ -71,8 +72,12 @@ pub fn generate_track(session: &mut Session, role: TrackRole, section_id: &str, 
         let notation = sug.first().map(|(sym, _)| sym.clone()).ok_or_else(|| Error::Parse("no chord suggestion available".into()))?;
         let events = crate::notation::parse_chords(&notation, &session.key, section.bars, session.bar_ticks())?;
         section.chords = events.clone();
-        if let Some(sec) = session.section_mut(section_id) {
-            sec.chords = events;
+        // Melody-first: keep the section chord-less so `harmonize` can fit chords to the melody later.
+        // Chords/bass need real harmony, so those store the suggestion.
+        if role != TrackRole::Melody {
+            if let Some(sec) = session.section_mut(section_id) {
+                sec.chords = events;
+            }
         }
     }
     let mut notes = match role {
