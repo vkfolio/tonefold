@@ -807,6 +807,7 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     let tracks = shared.lock_store().session.tracks.clone();
     let mut select: Option<(String, bool)> = None; // (id, additive)
     let mut solo_changed = false;
+    let mut drag_request: Option<(String, bool)> = None;
     ui.horizontal(|ui| {
         let mut solo = ui_state.solo_selected;
         if ui.checkbox(&mut solo, "Solo selected").on_hover_text("Play only the selected layers (click = select one, Ctrl+click = add more). Off = play everything.").changed() {
@@ -833,6 +834,14 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                 if resp.clicked() {
                     let additive = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
                     select = Some((t.id.clone(), additive));
+                }
+                // Drag handle: drag this layer's MIDI onto an FL channel / piano roll.
+                let written = ui_state.written.contains(&t.id);
+                let handle = ui.add(egui::Button::new(RichText::new(if written { "✓" } else { "⇗" }).small()).sense(egui::Sense::drag()).fill(Color32::from_rgb(48, 52, 60)))
+                    .on_hover_text("Drag onto an FL Studio channel (Channel Rack) or an open piano roll to write this layer's notes there.\nWhole song; hold Shift for the selected section only.");
+                if handle.drag_started() {
+                    let section_only = ui.input(|i| i.modifiers.shift);
+                    drag_request = Some((t.id.clone(), section_only));
                 }
                 if ui.add(egui::SelectableLabel::new(t.muted, "M")).on_hover_text("mute").clicked() {
                     let mut g = shared.lock_store();
@@ -877,6 +886,9 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     if solo_changed {
         shared.rebuild_playback();
     }
+    if let Some((tid, section_only)) = drag_request {
+        start_layer_drag(shared, &tid, section_only);
+    }
     ui.separator();
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt("add-kind").width(90.0 * st.ui_scale).selected_text(st.add_kind.label()).show_ui(ui, |ui| {
@@ -901,6 +913,47 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     if tracks.len() > 1 && ui.small_button("✕ remove selected layer").clicked() {
         let mut g = shared.lock_store();
         let _ = dispatch(&mut g, "remove_layer", &serde_json::json!({ "track": ui_state.selected_track }));
+    }
+}
+
+/// Writes the layer to a temp .mid and starts an OS drag with it (Windows). Blocks until dropped.
+fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
+    let (session, section) = {
+        let g = shared.lock_store();
+        let ui = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+        (g.session.clone(), ui.selected_section)
+    };
+    let Some(t) = session.track_by(track).cloned() else { return };
+    let notes: Vec<Note> = if section_only {
+        section.as_deref().and_then(|s| session.clip(&t.id, s).map(|c| c.notes.clone())).unwrap_or_default()
+    } else {
+        session.flatten(&t.id)
+    };
+    if notes.is_empty() {
+        shared.push_chat(ChatRole::System, format!("{} has no notes to write", t.name));
+        return;
+    }
+    let dir = flvstx_core::midi::default_export_dir().join("drag");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(format!("{}{}.mid", t.id, if section_only { format!("-{}", section.clone().unwrap_or_default()) } else { String::new() }));
+    let track_data = flvstx_core::midi::MidiTrack { name: &t.name, channel: t.channel, notes: &notes };
+    if let Err(e) = flvstx_core::midi::write_smf(&file, session.tempo, (session.time_sig.num, session.time_sig.den), &[track_data]) {
+        shared.push_chat(ChatRole::System, format!("could not write {}: {e}", file.display()));
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let dropped = crate::dragout::drag_file(&file);
+        if dropped {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.written.insert(t.id.clone());
+            }
+            shared.push_chat(ChatRole::System, format!("{} written to FL Studio ({})", t.name, if section_only { "selected section" } else { "whole song" }));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        shared.push_chat(ChatRole::System, format!("exported {} (drag-out is Windows only)", file.display()));
     }
 }
 

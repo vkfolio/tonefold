@@ -4,6 +4,8 @@
 //! transport (or an internal clock). GUI thread: egui editor (chat, arrangement, piano roll).
 //! IPC thread: WebSocket bridge to the agent sidecar, serving tool calls against the session store.
 
+#[cfg(windows)]
+pub mod dragout;
 pub mod editor;
 pub mod state;
 

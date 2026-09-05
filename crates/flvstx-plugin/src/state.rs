@@ -146,11 +146,13 @@ pub struct UiState {
     pub solo_selected: bool,
     pub loop_section: bool,
     pub muted: Vec<String>,
+    /// Layer ids that were dragged into FL (shown with a tick).
+    pub written: std::collections::BTreeSet<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        UiState { selected_section: None, selected_track: "melody".into(), selected_tracks: std::collections::BTreeSet::new(), solo_selected: false, loop_section: true, muted: Vec::new() }
+        UiState { selected_section: None, selected_track: "melody".into(), selected_tracks: std::collections::BTreeSet::new(), solo_selected: false, loop_section: true, muted: Vec::new(), written: std::collections::BTreeSet::new() }
     }
 }
 

@@ -45,6 +45,21 @@ if (-not (Test-Path $sf)) {
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2" -OutFile $sf -UseBasicParsing
 }
 
+# Standalone app (built-in sounds, no DAW needed) + Start Menu shortcut.
+$exe = Join-Path $root "target\release\flvstx-standalone.exe"
+if (Test-Path $exe) {
+    $appDir = Join-Path $env:LOCALAPPDATA "FLVSTX\app"
+    New-Item -ItemType Directory -Force $appDir | Out-Null
+    Copy-Item -Force $exe (Join-Path $appDir "FLVSTX.exe")
+    $ws = New-Object -ComObject WScript.Shell
+    $lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Programs")) "FLVSTX.lnk"))
+    $lnk.TargetPath = Join-Path $appDir "FLVSTX.exe"
+    $lnk.Arguments = "--backend auto"
+    $lnk.WorkingDirectory = $appDir
+    $lnk.Save()
+    Write-Host "Standalone app: $appDir\FLVSTX.exe (Start Menu > FLVSTX)"
+}
+
 $scriptDir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Image-Line\FL Studio\Settings\Piano roll scripts"
 New-Item -ItemType Directory -Force $scriptDir | Out-Null
 Copy-Item -Force (Join-Path $root "flscript\FLVSTX Import.pyscript") $scriptDir
