@@ -85,6 +85,11 @@ pub fn activate(hwnd: HWND) {
     });
 }
 
+/// The plugin window that was clicked last (0 = none).
+pub fn active_hwnd() -> isize {
+    ACTIVE.load(Ordering::Relaxed)
+}
+
 /// Call once per frame with `egui::Context::wants_keyboard_input()`.
 pub fn set_wants_keys(wants: bool) {
     WANTS_KEYS.store(wants, Ordering::Relaxed);

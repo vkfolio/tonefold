@@ -473,6 +473,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             }
             st.poll_agent(&shared);
             st.sync_state(&shared);
+            poll_drag_result(&shared);
             draw(ctx, st, &shared);
             ctx.request_repaint_after(std::time::Duration::from_millis(if st.turn_active || shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed) { 33 } else { 120 }));
         },
@@ -916,7 +917,27 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     }
 }
 
-/// Writes the layer to a temp .mid and starts an OS drag with it (Windows). Blocks until dropped.
+static PENDING_DRAG: Mutex<Option<(String, String, bool)>> = Mutex::new(None);
+
+/// Polled every frame: marks the layer written when a deferred drag ended in a drop.
+fn poll_drag_result(shared: &Shared) {
+    #[cfg(windows)]
+    if let Some((_path, dropped)) = crate::dragout::take_result() {
+        let pending = PENDING_DRAG.lock().ok().and_then(|mut p| p.take());
+        if let Some((id, name, section_only)) = pending {
+            if dropped {
+                if let Ok(mut u) = shared.ui.lock() {
+                    u.written.insert(id);
+                }
+                shared.push_chat(ChatRole::System, format!("{} written to FL Studio ({})", name, if section_only { "selected section" } else { "whole song" }));
+            } else {
+                shared.push_chat(ChatRole::System, format!("drag of {} cancelled", name));
+            }
+        }
+    }
+}
+
+/// Writes the layer to a temp .mid and starts an OS drag with it (Windows, deferred to a timer).
 fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
     let (session, section) = {
         let g = shared.lock_store();
@@ -943,13 +964,15 @@ fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
     }
     #[cfg(windows)]
     {
-        let dropped = crate::dragout::drag_file(&file);
-        if dropped {
-            if let Ok(mut u) = shared.ui.lock() {
-                u.written.insert(t.id.clone());
-            }
-            shared.push_chat(ChatRole::System, format!("{} written to FL Studio ({})", t.name, if section_only { "selected section" } else { "whole song" }));
+        let hwnd = egui_baseview::keyhook::active_hwnd();
+        if hwnd == 0 {
+            shared.push_chat(ChatRole::System, "drag: window handle unknown, click inside the plugin first".to_string());
+            return;
         }
+        if let Ok(mut p) = PENDING_DRAG.lock() {
+            *p = Some((t.id.clone(), t.name.clone(), section_only));
+        }
+        crate::dragout::start_drag_deferred(hwnd, &file);
     }
     #[cfg(not(windows))]
     {

@@ -101,6 +101,38 @@ impl IDropSource_Impl for Source_Impl {
     }
 }
 
+use std::sync::Mutex;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer, WM_LBUTTONUP};
+
+static PENDING: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+static RESULT: Mutex<Option<(std::path::PathBuf, bool)>> = Mutex::new(None);
+const DRAG_TIMER: usize = 0x7A91;
+
+/// Schedules the drag to start from a timer callback, i.e. outside the GUI framework's event handler
+/// (DoDragDrop runs a modal message loop that would otherwise re-enter it). Call while the mouse
+/// button is held. Poll [`take_result`] on later frames.
+pub fn start_drag_deferred(hwnd: isize, path: &Path) {
+    *PENDING.lock().unwrap() = Some(path.to_path_buf());
+    unsafe {
+        SetTimer(Some(HWND(hwnd as *mut _)), DRAG_TIMER, 1, Some(drag_timer_proc));
+    }
+}
+
+unsafe extern "system" fn drag_timer_proc(hwnd: HWND, _msg: u32, id: usize, _time: u32) {
+    let _ = KillTimer(Some(hwnd), id);
+    let Some(path) = PENDING.lock().unwrap().take() else { return };
+    let dropped = drag_file(&path);
+    *RESULT.lock().unwrap() = Some((path, dropped));
+    // OLE swallowed the button-up; give the GUI one so it leaves its drag state.
+    let _ = PostMessageW(Some(hwnd), WM_LBUTTONUP, WPARAM(0), LPARAM(0));
+}
+
+/// Result of the last deferred drag, once.
+pub fn take_result() -> Option<(std::path::PathBuf, bool)> {
+    RESULT.lock().unwrap().take()
+}
+
 /// Starts an OLE file drag of `path`. Blocks until the drop finishes. Returns true if dropped.
 pub fn drag_file(path: &Path) -> bool {
     unsafe {
