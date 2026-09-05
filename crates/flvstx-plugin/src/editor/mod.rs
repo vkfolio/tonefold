@@ -898,16 +898,17 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         });
         if ui.button("+ Layer").clicked() {
-            let mut g = shared.lock_store();
-            if let Ok(v) = dispatch(&mut g, "add_layer", &serde_json::json!({ "kind": st.add_kind.name() })) {
-                if let Some(id) = v["track"].as_str() {
-                    if let Ok(mut u) = shared.ui.lock() {
-                        u.selected_track = id.to_string();
-                        u.selected_tracks.clear();
-                        u.selected_tracks.insert(id.to_string());
-                    }
-                    shared.rebuild_playback();
+            let added = {
+                let mut g = shared.lock_store();
+                dispatch(&mut g, "add_layer", &serde_json::json!({ "kind": st.add_kind.name() })).ok().and_then(|v| v["track"].as_str().map(str::to_string))
+            };
+            if let Some(id) = added {
+                if let Ok(mut u) = shared.ui.lock() {
+                    u.selected_track = id.clone();
+                    u.selected_tracks.clear();
+                    u.selected_tracks.insert(id);
                 }
+                shared.rebuild_playback();
             }
         }
     });
