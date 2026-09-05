@@ -63,6 +63,11 @@ pub struct EditorState {
     add_kind: TrackRole,
     /// Output channel chosen in the top bar this frame (applied through the param setter).
     pending_output: Option<i32>,
+    /// Edit buffers for single-line text fields (committed when the field loses focus).
+    style_draft: String,
+    style_focused: bool,
+    name_draft: String,
+    name_focused: bool,
 }
 
 /// One alternative produced by "Suggest": optional chords (for chord layers) plus the notes.
@@ -431,6 +436,10 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         show_arrangement: false,
         add_kind: TrackRole::Arpeggio,
         pending_output: None,
+        style_draft: String::new(),
+        style_focused: false,
+        name_draft: String::new(),
+        name_focused: false,
     };
     create_egui_editor(
         params.editor_state.clone(),
@@ -529,12 +538,16 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         }
         ui.separator();
         ui.label("Style");
-        let mut style_edit = style.clone();
-        let resp = ui.add(egui::TextEdit::singleline(&mut style_edit).desired_width(110.0 * st.ui_scale));
-        if resp.lost_focus() && style_edit != style {
+        if !st.style_focused {
+            st.style_draft = style.clone();
+        }
+        let resp = ui.add(egui::TextEdit::singleline(&mut st.style_draft).desired_width(110.0 * st.ui_scale).hint_text("pop, lofi, kids…"));
+        st.style_focused = resp.has_focus();
+        if resp.lost_focus() && st.style_draft.trim() != style {
+            let new_style = st.style_draft.trim().to_string();
             let mut g = shared.lock_store();
             let _ = g.mutate(|s| {
-                s.style = style_edit.clone();
+                s.style = new_style.clone();
                 Ok(())
             });
         }
@@ -644,10 +657,15 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     });
     if let Some(id) = selected {
         if let Some(sec) = sections.iter().find(|s| s.id == id) {
-            let (mut name, mut bars, mut energy, mut role) = (sec.name.clone(), sec.bars, sec.energy, sec.role);
+            let (mut bars, mut energy, mut role) = (sec.bars, sec.energy, sec.role);
+            if !st.name_focused {
+                st.name_draft = sec.name.clone();
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Section").weak());
-                let r1 = ui.add(egui::TextEdit::singleline(&mut name).desired_width(120.0 * st.ui_scale));
+                let r1 = ui.add(egui::TextEdit::singleline(&mut st.name_draft).desired_width(120.0 * st.ui_scale));
+                st.name_focused = r1.has_focus();
+                let name = st.name_draft.trim().to_string();
                 let roles = [SectionRole::Intro, SectionRole::Verse, SectionRole::PreChorus, SectionRole::Chorus, SectionRole::Bridge, SectionRole::Break, SectionRole::Build, SectionRole::Drop, SectionRole::Outro, SectionRole::Other];
                 let mut role_changed = false;
                 egui::ComboBox::from_id_salt("sec-role").width(90.0 * st.ui_scale).selected_text(role.name()).show_ui(ui, |ui| {
