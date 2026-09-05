@@ -18,6 +18,18 @@ Copy-Item -Recurse -Force '$vst3' '$vst3Dir\FLVSTX.vst3'
 $p = Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile", "-Command", $cmd -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "elevated copy failed (exit $($p.ExitCode))" }
 
+# Verify: a running FL Studio locks the plugin files and the copy fails silently.
+$srcClapHash = (Get-FileHash $clap).Hash
+$srcVst3Hash = (Get-FileHash (Join-Path $vst3 "Contents_64-win\FLVSTX.vst3")).Hash
+$dstClapHash = (Get-FileHash "$clapDir\FLVSTX.clap").Hash
+$dstVst3Path = "$vst3Dir\FLVSTX.vst3\Contents_64-win\FLVSTX.vst3"
+$dstVst3Hash = if (Test-Path $dstVst3Path) { (Get-FileHash $dstVst3Path).Hash } else { "" }
+if ($srcClapHash -ne $dstClapHash -or $srcVst3Hash -ne $dstVst3Hash) {
+    $fl = Get-Process FL64* -ErrorAction SilentlyContinue
+    $hint = if ($fl) { " FL Studio is running (PID $($fl.Id -join ',')) and locks the loaded plugin file; close FL Studio and run the installer again." } else { "" }
+    throw "Installed files do not match the build (CLAP ok: $($srcClapHash -eq $dstClapHash), VST3 ok: $($srcVst3Hash -eq $dstVst3Hash)).$hint"
+}
+
 # Remove stale per-user copies from earlier installs so FL does not see duplicates.
 $userClap = Join-Path $env:LOCALAPPDATA "Programs\Common\CLAP\FLVSTX.clap"
 $userVst3 = Join-Path $env:LOCALAPPDATA "Programs\Common\VST3\FLVSTX.vst3"

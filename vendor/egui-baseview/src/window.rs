@@ -506,6 +506,8 @@ where
                 _ => {}
             },
             baseview::Event::Keyboard(event) => {
+                #[cfg(target_os = "windows")]
+                crate::keyhook::log(&format!("window key event: {:?} {:?}", event.state, event.key));
                 use keyboard_types::Code;
 
                 let pressed = event.state == keyboard_types::KeyState::Down;
