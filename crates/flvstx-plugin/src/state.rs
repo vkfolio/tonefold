@@ -119,15 +119,19 @@ pub struct Shared {
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub selected_section: Option<String>,
-    /// Selected layer id.
+    /// Selected layer id (the one shown in the piano roll).
     pub selected_track: String,
+    /// All selected layer ids (Ctrl+click adds); playback solos these when `solo_selected` is on.
+    pub selected_tracks: std::collections::BTreeSet<String>,
+    /// Play only the selected layers. Off = play everything not muted.
+    pub solo_selected: bool,
     pub loop_section: bool,
     pub muted: Vec<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        UiState { selected_section: None, selected_track: "melody".into(), loop_section: true, muted: Vec::new() }
+        UiState { selected_section: None, selected_track: "melody".into(), selected_tracks: std::collections::BTreeSet::new(), solo_selected: false, loop_section: true, muted: Vec::new() }
     }
 }
 
@@ -192,7 +196,15 @@ impl Shared {
         };
         let ui = self.ui.lock().map(|u| u.clone()).unwrap_or_default();
         let loop_section = if ui.loop_section { ui.selected_section.clone() } else { None };
-        let buf = PlaybackBuffer::build(&session, loop_section.as_deref(), &ui.muted);
+        let mut muted = ui.muted.clone();
+        if ui.solo_selected && !ui.selected_tracks.is_empty() {
+            for t in &session.tracks {
+                if !ui.selected_tracks.contains(&t.id) {
+                    muted.push(t.id.clone());
+                }
+            }
+        }
+        let buf = PlaybackBuffer::build(&session, loop_section.as_deref(), &muted);
         self.playback.store(Arc::new(buf));
         self.built_revision.store(revision, Ordering::Release);
     }

@@ -68,6 +68,7 @@ pub struct EditorState {
     style_focused: bool,
     name_draft: String,
     name_focused: bool,
+    pub md_cache: egui_commonmark::CommonMarkCache,
 }
 
 /// One alternative produced by "Suggest": optional chords (for chord layers) plus the notes.
@@ -440,6 +441,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         style_focused: false,
         name_draft: String::new(),
         name_focused: false,
+        md_cache: egui_commonmark::CommonMarkCache::default(),
     };
     create_egui_editor(
         params.editor_state.clone(),
@@ -789,14 +791,34 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     ui.separator();
     let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
     let tracks = shared.lock_store().session.tracks.clone();
-    let mut select: Option<String> = None;
+    let mut select: Option<(String, bool)> = None; // (id, additive)
+    let mut solo_changed = false;
+    ui.horizontal(|ui| {
+        let mut solo = ui_state.solo_selected;
+        if ui.checkbox(&mut solo, "Solo selected").on_hover_text("Play only the selected layers (click = select one, Ctrl+click = add more). Off = play everything.").changed() {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.solo_selected = solo;
+            }
+            solo_changed = true;
+        }
+        if ui.small_button("All").on_hover_text("select every layer").clicked() {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.selected_tracks = tracks.iter().map(|t| t.id.clone()).collect();
+            }
+            solo_changed = true;
+        }
+    });
     egui::ScrollArea::vertical().id_salt("layers-scroll").auto_shrink([false, false]).max_height(ui.available_height() - 70.0 * st.ui_scale).show(ui, |ui| {
         for t in &tracks {
-            let sel = ui_state.selected_track == t.id;
+            let primary = ui_state.selected_track == t.id;
+            let sel = primary || ui_state.selected_tracks.contains(&t.id);
             ui.horizontal(|ui| {
-                let btn = egui::Button::new(RichText::new(&t.name).color(if sel { Color32::BLACK } else { track_color(t.kind) })).fill(if sel { track_color(t.kind) } else { Color32::from_rgb(40, 42, 48) }).min_size(egui::vec2(70.0 * st.ui_scale, 0.0));
-                if ui.add(btn).on_hover_text(format!("{} · MIDI ch {}\n{}", t.kind.name(), t.channel + 1, t.kind.description())).clicked() {
-                    select = Some(t.id.clone());
+                let fill = if primary { track_color(t.kind) } else if sel { Color32::from_rgb(70, 76, 90) } else { Color32::from_rgb(40, 42, 48) };
+                let btn = egui::Button::new(RichText::new(&t.name).color(if primary { Color32::BLACK } else { track_color(t.kind) })).fill(fill).min_size(egui::vec2(70.0 * st.ui_scale, 0.0));
+                let resp = ui.add(btn).on_hover_text(format!("{} · MIDI ch {}\n{}\nclick: select, Ctrl+click: add to selection", t.kind.name(), t.channel + 1, t.kind.description()));
+                if resp.clicked() {
+                    let additive = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
+                    select = Some((t.id.clone(), additive));
                 }
                 if ui.add(egui::SelectableLabel::new(t.muted, "M")).on_hover_text("mute").clicked() {
                     let mut g = shared.lock_store();
@@ -820,11 +842,26 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             ui.label(RichText::new(format!("ch {}", t.channel + 1)).small().weak());
         }
     });
-    if let Some(id) = select {
+    if let Some((id, additive)) = select {
         if let Ok(mut u) = shared.ui.lock() {
-            u.selected_track = id;
+            if additive {
+                if u.selected_tracks.contains(&id) && u.selected_tracks.len() > 1 && u.selected_track != id {
+                    u.selected_tracks.remove(&id);
+                } else {
+                    u.selected_tracks.insert(id.clone());
+                    u.selected_track = id;
+                }
+            } else {
+                u.selected_tracks.clear();
+                u.selected_tracks.insert(id.clone());
+                u.selected_track = id;
+            }
         }
         st.piano.selection.clear();
+        solo_changed = true;
+    }
+    if solo_changed {
+        shared.rebuild_playback();
     }
     ui.separator();
     ui.horizontal(|ui| {
@@ -839,7 +876,10 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                 if let Some(id) = v["track"].as_str() {
                     if let Ok(mut u) = shared.ui.lock() {
                         u.selected_track = id.to_string();
+                        u.selected_tracks.clear();
+                        u.selected_tracks.insert(id.to_string());
                     }
+                    shared.rebuild_playback();
                 }
             }
         }

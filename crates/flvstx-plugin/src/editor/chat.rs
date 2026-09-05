@@ -74,7 +74,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                     ui.add_space(4.0);
                     egui::Frame::new().fill(Color32::from_rgb(34, 40, 46)).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(RichText::new(&line.text).color(Color32::from_rgb(220, 225, 230)));
+                        egui_commonmark::CommonMarkViewer::new().show(ui, &mut st.md_cache, &line.text);
                     });
                 }
                 ChatRole::Tool => {
@@ -89,7 +89,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             ui.add_space(4.0);
             egui::Frame::new().fill(Color32::from_rgb(34, 40, 46)).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(&st.streaming).color(Color32::from_rgb(200, 205, 210)));
+                let text = st.streaming.clone();
+                egui_commonmark::CommonMarkViewer::new().show(ui, &mut st.md_cache, &text);
             });
         }
     });
