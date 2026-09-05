@@ -877,6 +877,7 @@ dependencies = [
  "open",
  "raw-window-handle 0.5.2",
  "thiserror 2.0.20",
+ "winapi",
 ]
 
 [[package]]

@@ -392,6 +392,8 @@ where
             window.set_mouse_cursor(cursor_icon);
         }
 
+        #[cfg(target_os = "windows")]
+        crate::keyhook::set_wants_keys(self.egui_ctx.wants_keyboard_input());
         // A temporary workaround for keyboard input not working sometimes in Windows.
         // See https://github.com/BillyDM/egui-baseview/issues/20
         #[cfg(feature = "windows_keyboard_workaround")]
@@ -414,6 +416,15 @@ where
         if let baseview::Event::Mouse(baseview::MouseEvent::ButtonPressed { .. }) = &event {
             if !window.has_focus() {
                 window.focus();
+            }
+            if let raw_window_handle::RawWindowHandle::Win32(h) = window.raw_window_handle() {
+                crate::keyhook::activate(h.hwnd as _);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if let baseview::Event::Window(baseview::WindowEvent::WillClose) = &event {
+            if let raw_window_handle::RawWindowHandle::Win32(h) = window.raw_window_handle() {
+                crate::keyhook::deactivate(h.hwnd as _);
             }
         }
         match &event {

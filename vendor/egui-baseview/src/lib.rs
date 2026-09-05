@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+pub mod keyhook;
 mod renderer;
 mod translate;
 mod window;
