@@ -3,6 +3,7 @@
 
 pub mod analyze;
 pub mod generate;
+pub mod gm;
 pub mod humanize;
 pub mod midi;
 pub mod model;

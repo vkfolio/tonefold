@@ -29,7 +29,16 @@ pub struct Flvstx {
     seen_seek_epoch: u64,
     seen_panic_epoch: u64,
     seen_preview_epoch: u64,
+    /// Built-in soundfont synth (only the audio-owner instance renders it).
+    synth: Option<rustysynth::Synthesizer>,
+    synth_programs: [u8; 16],
+    synth_events: Vec<(u32, bool, u8, u8, u8)>,
+    synth_l: Vec<f32>,
+    synth_r: Vec<f32>,
+    instance_id: u64,
 }
+
+static INSTANCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Label for the MIDI output parameter: "All" or "ch N: Layer" looked up in the shared song.
 fn output_label(v: i32) -> String {
@@ -55,6 +64,12 @@ pub struct FlvstxParams {
     /// The whole session + chat as JSON (kept in sync by the GUI thread).
     #[persist = "flvstx-state"]
     state_json: Arc<RwLock<String>>,
+    /// Play the song through the built-in soundfont synth (no routing needed).
+    #[id = "sound"]
+    pub sound: BoolParam,
+    /// Built-in synth gain.
+    #[id = "sound_gain"]
+    pub sound_gain: FloatParam,
 }
 
 impl Default for Flvstx {
@@ -70,6 +85,11 @@ impl Default for Flvstx {
                         t.trim_start_matches("ch").trim().split(':').next().and_then(|n| n.trim().parse::<i32>().ok())
                     })),
                 state_json: Arc::new(RwLock::new(String::new())),
+                sound: BoolParam::new("Built-in sound", true),
+                sound_gain: FloatParam::new("Sound gain", util::db_to_gain(0.0), FloatRange::Skewed { min: util::db_to_gain(-30.0), max: util::db_to_gain(6.0), factor: FloatRange::gain_skew_factor(-30.0, 6.0) })
+                    .with_unit(" dB")
+                    .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
+                    .with_string_to_value(formatters::s2v_f32_gain_to_db()),
             }),
             shared: state::global_shared(),
             sample_rate: 44100.0,
@@ -82,6 +102,12 @@ impl Default for Flvstx {
             seen_seek_epoch: 0,
             seen_panic_epoch: 0,
             seen_preview_epoch: 0,
+            synth: None,
+            synth_programs: [255; 16],
+            synth_events: Vec::with_capacity(1024),
+            synth_l: Vec::new(),
+            synth_r: Vec::new(),
+            instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
@@ -122,6 +148,14 @@ impl Plugin for Flvstx {
 
     fn initialize(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, _context: &mut impl InitContext<Self>) -> bool {
         self.sample_rate = buffer_config.sample_rate;
+        let max = buffer_config.max_buffer_size as usize;
+        self.synth_l = vec![0.0; max.max(64)];
+        self.synth_r = vec![0.0; max.max(64)];
+        self.shared.load_soundfont_async();
+        let _ = self.shared.audio_owner.compare_exchange(0, self.instance_id, Ordering::AcqRel, Ordering::Acquire);
+        self.synth = None;
+        self.synth_programs = [255; 16];
+        self.try_create_synth();
         // Restore persisted state (project load). The GUI also does this, but the editor may not be open.
         let json = self.params.state_json.read().map(|s| s.clone()).unwrap_or_default();
         let h = hash_str(&json);
@@ -139,6 +173,9 @@ impl Plugin for Flvstx {
     fn reset(&mut self) {
         self.next_event = 0;
         self.sounding.clear();
+        if let Some(s) = self.synth.as_mut() {
+            s.note_off_all(true);
+        }
     }
 
     fn process(&mut self, buffer: &mut Buffer, _aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
@@ -166,11 +203,15 @@ impl Plugin for Flvstx {
         let panic_epoch = shared.panic.load(Ordering::Acquire);
         let panic_now = panic_epoch != self.seen_panic_epoch;
         self.seen_panic_epoch = panic_epoch;
+        self.synth_events.clear();
         if panic_now || (!want_play && self.was_playing) {
             for &(ch, p) in &self.sounding {
                 context.send_event(NoteEvent::NoteOff { timing: 0, voice_id: None, channel: ch, note: p, velocity: 0.0 });
             }
             self.sounding.clear();
+            if let Some(s) = self.synth.as_mut() {
+                s.note_off_all(false);
+            }
         }
 
         // Seek request.
@@ -220,10 +261,16 @@ impl Plugin for Flvstx {
                                     self.sounding.push((e.channel, e.pitch));
                                 }
                             }
+                            if self.synth_events.len() < self.synth_events.capacity() {
+                                self.synth_events.push((timing, true, e.synth_channel, e.pitch, (e.vel * 127.0) as u8));
+                            }
                         } else {
                             context.send_event(NoteEvent::NoteOff { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: 0.0 });
                             if let Some(i) = self.sounding.iter().position(|&(c, p)| c == e.channel && p == e.pitch) {
                                 self.sounding.swap_remove(i);
+                            }
+                            if self.synth_events.len() < self.synth_events.capacity() {
+                                self.synth_events.push((timing, false, e.synth_channel, e.pitch, 0));
                             }
                         }
                         self.next_event += 1;
@@ -281,13 +328,16 @@ impl Plugin for Flvstx {
             }
             if output_allows(output, ch) {
                 context.send_event(NoteEvent::NoteOn { timing: 0, voice_id: None, channel: ch, note: pitch, velocity: vel });
-                self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
             }
+            self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
+            let sch = if ch == 9 { 9 } else { ch };
+            self.synth_events.push((0, true, sch, pitch, (vel * 127.0) as u8));
         }
         if let Some((remaining, ch, p)) = self.preview_off_at {
             if remaining <= n {
                 context.send_event(NoteEvent::NoteOff { timing: remaining.saturating_sub(1).min(n - 1), voice_id: None, channel: ch, note: p, velocity: 0.0 });
                 self.preview_off_at = None;
+                self.synth_events.push((remaining.saturating_sub(1).min(n - 1), false, if ch == 9 { 9 } else { ch }, p, 0));
             } else {
                 self.preview_off_at = Some((remaining - n, ch, p));
             }
@@ -296,7 +346,102 @@ impl Plugin for Flvstx {
         for ch in buffer.as_slice() {
             ch.fill(0.0);
         }
+        self.render_synth(buffer, &buf.programs, n as usize);
         ProcessStatus::Normal
+    }
+}
+
+impl Flvstx {
+    /// Creates the synthesizer once the shared soundfont is loaded (cheap once the font is in memory).
+    fn try_create_synth(&mut self) {
+        if self.synth.is_some() {
+            return;
+        }
+        let sf = match self.shared.soundfont.try_lock() {
+            Ok(g) => g.clone(),
+            Err(_) => None,
+        };
+        if let Some(sf) = sf {
+            let mut settings = rustysynth::SynthesizerSettings::new(self.sample_rate as i32);
+            settings.enable_reverb_and_chorus = true;
+            settings.maximum_polyphony = 96;
+            if let Ok(s) = rustysynth::Synthesizer::new(&sf, &settings) {
+                self.synth = Some(s);
+                self.synth_programs = [255; 16];
+            }
+        }
+    }
+
+    fn render_synth(&mut self, buffer: &mut Buffer, programs: &[u8; 16], n: usize) {
+        let enabled = self.params.sound.value();
+        let owner = self.shared.audio_owner.load(Ordering::Acquire);
+        if owner == 0 {
+            let _ = self.shared.audio_owner.compare_exchange(0, self.instance_id, Ordering::AcqRel, Ordering::Acquire);
+        }
+        let is_owner = self.shared.audio_owner.load(Ordering::Acquire) == self.instance_id;
+        if !enabled || !is_owner {
+            return;
+        }
+        if self.synth.is_none() {
+            self.try_create_synth();
+        }
+        let Some(synth) = self.synth.as_mut() else { return };
+        if n > self.synth_l.len() {
+            return;
+        }
+        // Program changes.
+        for ch in 0..16 {
+            let want = programs[ch];
+            if want != self.synth_programs[ch] {
+                self.synth_programs[ch] = want;
+                if ch != 9 && want < 128 {
+                    synth.process_midi_message(ch as i32, 0xC0, want as i32, 0);
+                }
+            }
+        }
+        // Render in segments between events for sample-accurate timing.
+        self.synth_events.sort_by_key(|e| e.0);
+        let mut pos = 0usize;
+        let gain = self.params.sound_gain.value();
+        let (l, r) = self.synth_l.split_at_mut(0);
+        let _ = (l, r);
+        let mut idx = 0;
+        while pos < n {
+            let next = self.synth_events.get(idx).map(|e| (e.0 as usize).min(n)).unwrap_or(n);
+            if next > pos {
+                let (ls, rs) = (&mut self.synth_l[pos..next], &mut self.synth_r[pos..next]);
+                synth.render(ls, rs);
+                pos = next;
+            }
+            while let Some(e) = self.synth_events.get(idx) {
+                if (e.0 as usize).min(n) > pos {
+                    break;
+                }
+                if e.1 {
+                    synth.note_on(e.2 as i32, e.3 as i32, e.4.max(1) as i32);
+                } else {
+                    synth.note_off(e.2 as i32, e.3 as i32);
+                }
+                idx += 1;
+            }
+        }
+        let out = buffer.as_slice();
+        if out.len() >= 2 {
+            for i in 0..n {
+                out[0][i] += self.synth_l[i] * gain;
+                out[1][i] += self.synth_r[i] * gain;
+            }
+        } else if let Some(ch) = out.first_mut() {
+            for i in 0..n {
+                ch[i] += (self.synth_l[i] + self.synth_r[i]) * 0.5 * gain;
+            }
+        }
+    }
+}
+
+impl Drop for Flvstx {
+    fn drop(&mut self) {
+        let _ = self.shared.audio_owner.compare_exchange(self.instance_id, 0, Ordering::AcqRel, Ordering::Acquire);
     }
 }
 

@@ -84,6 +84,33 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
     // Toolbar.
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{} · {}{}", track_name, section.name, if active { "" } else { " (silent here)" })).strong().color(color));
+        // Built-in instrument for this layer.
+        if !drums {
+            let (program, style) = {
+                let g = shared.lock_store();
+                let t = g.session.track_by(&track_id).cloned();
+                (t.map(|t| t.program(&g.session.style)).unwrap_or(0), g.session.style.clone())
+            };
+            let _ = style;
+            let mut chosen = program;
+            egui::ComboBox::from_id_salt("instrument").width(170.0).selected_text(flvstx_core::gm::program_name(program)).show_ui(ui, |ui| {
+                for (i, name) in flvstx_core::gm::GM_PROGRAMS.iter().enumerate() {
+                    ui.selectable_value(&mut chosen, i as u8, format!("{i:>3} {name}"));
+                }
+            });
+            if chosen != program {
+                let mut g = shared.lock_store();
+                let tid = track_id.clone();
+                let _ = g.mutate(|s| {
+                    if let Some(t) = s.track_by_mut(&tid) {
+                        t.instrument = Some(chosen);
+                    }
+                    Ok(())
+                });
+            }
+        } else {
+            ui.label(egui::RichText::new("Drum Kit").small().weak());
+        }
         ui.label("snap");
         egui::ComboBox::from_id_salt("snap").width(56.0).selected_text(format!("1/{}", view.snap_div)).show_ui(ui, |ui| {
             for d in [4u32, 8, 16, 32, 12, 24] {

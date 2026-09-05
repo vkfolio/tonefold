@@ -392,14 +392,21 @@ pub struct Track {
     /// Sections in which this layer is silent (arrangement). Absent = plays.
     #[serde(default)]
     pub inactive: BTreeSet<String>,
+    /// General MIDI program for the built-in synth (128 = drum kit). None = default for the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<u8>,
 }
 
 impl Track {
     pub fn new(id: impl Into<String>, name: impl Into<String>, kind: TrackRole, channel: u8) -> Self {
-        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new() }
+        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new(), instrument: None }
     }
     pub fn active_in(&self, section_id: &str) -> bool {
         !self.inactive.contains(section_id)
+    }
+    /// Effective General MIDI program (explicit or the kind's default for the style).
+    pub fn program(&self, style: &str) -> u8 {
+        self.instrument.unwrap_or_else(|| crate::gm::default_program(self.kind, style))
     }
 }
 

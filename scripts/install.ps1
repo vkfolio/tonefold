@@ -36,6 +36,15 @@ $userVst3 = Join-Path $env:LOCALAPPDATA "Programs\Common\VST3\FLVSTX.vst3"
 Remove-Item -Force $userClap -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $userVst3 -ErrorAction SilentlyContinue
 
+# Built-in sounds: GeneralUser GS (free General MIDI soundfont, ~31 MB), downloaded once.
+$sfDir = Join-Path $env:LOCALAPPDATA "FLVSTX\soundfont"
+$sf = Join-Path $sfDir "GeneralUser-GS.sf2"
+if (-not (Test-Path $sf)) {
+    New-Item -ItemType Directory -Force $sfDir | Out-Null
+    Write-Host "Downloading GeneralUser GS soundfont (31 MB)..."
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2" -OutFile $sf -UseBasicParsing
+}
+
 $scriptDir = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Image-Line\FL Studio\Settings\Piano roll scripts"
 New-Item -ItemType Directory -Force $scriptDir | Out-Null
 Copy-Item -Force (Join-Path $root "flscript\FLVSTX Import.pyscript") $scriptDir

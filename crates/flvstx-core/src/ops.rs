@@ -125,7 +125,7 @@ pub fn describe(session: &Session) -> String {
         session.time_sig.den,
         session.style,
         session.sections.len(),
-        session.tracks.iter().map(|t| format!("{}{}{}", t.id, if t.kind.name() != t.id { format!("({})", t.kind.name()) } else { String::new() }, if t.locked { "[locked]" } else { "" })).collect::<Vec<_>>().join(", ")
+        session.tracks.iter().map(|t| format!("{}{}{} [{}]", t.id, if t.kind.name() != t.id { format!("({})", t.kind.name()) } else { String::new() }, if t.locked { "[locked]" } else { "" }, crate::gm::program_name(t.program(&session.style)))).collect::<Vec<_>>().join(", ")
     );
     let bar = session.bar_ticks();
     for sec in &session.sections {
@@ -309,6 +309,17 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             })?;
             Ok(json!({ "ok": true }))
         }
+        "set_instrument" => {
+            let tid = track_id(&store.session, params)?;
+            let inst: String = arg(params, "instrument")?;
+            let program = crate::gm::parse_program(&inst).ok_or_else(|| Error::Parse(format!("unknown instrument '{inst}' (General MIDI name or number 0-127, or 'drum kit')")))?;
+            store.mutate(|s| {
+                s.track_by_mut(&tid).unwrap().instrument = Some(program);
+                Ok(())
+            })?;
+            Ok(json!({ "ok": true, "track": tid, "instrument": crate::gm::program_name(program) }))
+        }
+        "list_instruments" => Ok(json!({ "instruments": crate::gm::GM_PROGRAMS.iter().enumerate().map(|(i, n)| format!("{i}: {n}")).collect::<Vec<_>>(), "drums": "128: Drum Kit" })),
         "list_layer_kinds" => Ok(json!({ "kinds": TrackRole::ALL.iter().map(|k| json!({ "kind": k.name(), "description": k.description() })).collect::<Vec<_>>() })),
         "set_arrangement" => {
             let tid = track_id(&store.session, params)?;

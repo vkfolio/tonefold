@@ -63,6 +63,8 @@ pub struct EditorState {
     add_kind: TrackRole,
     /// Output channel chosen in the top bar this frame (applied through the param setter).
     pending_output: Option<i32>,
+    pending_sound: Option<bool>,
+    pending_gain: Option<f32>,
     /// Edit buffers for single-line text fields (committed when the field loses focus).
     style_draft: String,
     style_focused: bool,
@@ -125,6 +127,16 @@ impl EditorState {
             setter.begin_set_parameter(&self.params.output);
             setter.set_parameter(&self.params.output, v);
             setter.end_set_parameter(&self.params.output);
+        }
+        if let Some(v) = self.pending_sound.take() {
+            setter.begin_set_parameter(&self.params.sound);
+            setter.set_parameter(&self.params.sound, v);
+            setter.end_set_parameter(&self.params.sound);
+        }
+        if let Some(v) = self.pending_gain.take() {
+            setter.begin_set_parameter(&self.params.sound_gain);
+            setter.set_parameter(&self.params.sound_gain, v);
+            setter.end_set_parameter(&self.params.sound_gain);
         }
     }
 
@@ -437,6 +449,8 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         show_arrangement: false,
         add_kind: TrackRole::Arpeggio,
         pending_output: None,
+        pending_sound: None,
+        pending_gain: None,
         style_draft: String::new(),
         style_focused: false,
         name_draft: String::new(),
@@ -922,6 +936,16 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         if ui.small_button("Panic").clicked() {
             shared.request_panic();
         }
+        ui.separator();
+        let mut sound = st.params.sound.value();
+        if ui.checkbox(&mut sound, "Built-in sound").on_hover_text("Play the song through FLVSTX's own General MIDI sounds (no routing needed). Untick when you route layers to FL instruments instead.").changed() {
+            st.pending_sound = Some(sound);
+        }
+        let mut db = nih_plug::util::gain_to_db(st.params.sound_gain.value());
+        if ui.add(egui::Slider::new(&mut db, -30.0..=6.0).show_value(false).suffix(" dB")).on_hover_text(format!("volume {db:.0} dB")).changed() {
+            st.pending_gain = Some(nih_plug::util::db_to_gain(db));
+        }
+        ui.label(RichText::new(shared.soundfont_status.lock().map(|s| s.clone()).unwrap_or_default()).small().weak());
         ui.separator();
         if ui.button("Undo").clicked() {
             shared.lock_store().undo();

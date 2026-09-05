@@ -24,3 +24,4 @@ arc-swap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 egui_commonmark = "0.20"
+rustysynth = "1.3"

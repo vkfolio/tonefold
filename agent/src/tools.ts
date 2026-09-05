@@ -44,6 +44,7 @@ export const TOOL_NAMES = [
   "get_session", "get_notes", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords",
   "suggest_chords", "harmonize", "set_notes", "generate", "generate_all", "generate_song", "humanize", "analyze", "set_lyrics", "lock",
   "clear", "transpose", "undo", "export", "add_layer", "remove_layer", "set_arrangement", "list_layer_kinds",
+  "set_instrument",
 ];
 
 export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, result: string, ok: boolean) => void) {
@@ -82,6 +83,7 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
     tool("add_layer", "Add a layer (track) of a kind: chords, pad, arpeggio, pluck, melody, counter_melody, harmony, bass, sub, drums, percussion. Returns its id and MIDI channel. Kinds derive from what exists (arpeggio/pad/pluck from chords, counter_melody/harmony from the melody).", { kind: KIND, name: z.string().optional() }, wrap(rpc, "add_layer", onCall)),
     tool("remove_layer", "Remove a layer.", { track: TRACK }, wrap(rpc, "remove_layer", onCall)),
     tool("set_arrangement", "Make a layer play or stay silent in a section (or all sections when section is omitted). Use it for intros/breaks/outros and to bring layers in gradually.", { track: TRACK, section: z.string().optional(), active: z.boolean() }, wrap(rpc, "set_arrangement", onCall)),
+    tool("set_instrument", "Set the built-in General MIDI instrument a layer is auditioned with (name like 'Music Box', 'String Ensemble 1', 'Synth Bass 1', or program number 0-127; drums use the drum kit). Pick sounds that fit the style.", { track: TRACK, instrument: z.string() }, wrap(rpc, "set_instrument", onCall)),
     tool("list_layer_kinds", "List the available layer kinds with descriptions.", {}, wrap(rpc, "list_layer_kinds", onCall)),
     tool("generate_song", "Generate every active, unlocked layer in every section in dependency order, with melodic continuity across sections (chorus restates the verse motif higher) and section-role contrast (intro/break sparse, chorus/drop full, build rises into the next section).", { params: genParams }, wrap(rpc, "generate_song", onCall)),
     tool("copy_section", "Copy chords and all track notes from one section to another (e.g. verse -> verse2 before varying it).", { from: z.string(), to: z.string() }, wrap(rpc, "copy_section", onCall)),

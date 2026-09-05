@@ -16,6 +16,8 @@ pub struct Event {
     pub tick: u32,
     pub on: bool,
     pub channel: u8,
+    /// Channel for the built-in synth (drums/percussion always go to the GM percussion channel 9).
+    pub synth_channel: u8,
     pub pitch: u8,
     pub vel: f32,
 }
@@ -27,6 +29,8 @@ pub struct PlaybackBuffer {
     pub loop_start: u32,
     pub loop_end: u32,
     pub tempo: f32,
+    /// General MIDI program per synth channel (128 = drums) at build time.
+    pub programs: [u8; 16],
 }
 
 impl PlaybackBuffer {
@@ -42,17 +46,26 @@ impl PlaybackBuffer {
                 continue;
             }
             let ch = t.channel;
+            let sch = if t.kind.is_pitched() { if ch == 9 { 15 } else { ch } } else { 9 };
             for n in session.flatten(&t.id) {
                 if n.start >= loop_end || n.end() <= loop_start {
                     continue;
                 }
-                events.push(Event { tick: n.start, on: true, channel: ch, pitch: n.pitch, vel: n.vel });
-                events.push(Event { tick: n.end().min(loop_end.saturating_sub(1)).max(n.start + 1), on: false, channel: ch, pitch: n.pitch, vel: 0.0 });
+                events.push(Event { tick: n.start, on: true, channel: ch, synth_channel: sch, pitch: n.pitch, vel: n.vel });
+                events.push(Event { tick: n.end().min(loop_end.saturating_sub(1)).max(n.start + 1), on: false, channel: ch, synth_channel: sch, pitch: n.pitch, vel: 0.0 });
             }
         }
         // Note-offs before note-ons at the same tick so retriggers work.
         events.sort_by_key(|e| (e.tick, e.on));
-        PlaybackBuffer { events, loop_start, loop_end, tempo: session.tempo }
+        let mut programs = [0u8; 16];
+        programs[9] = flvstx_core::gm::DRUM_KIT;
+        for t in &session.tracks {
+            let sch = if t.kind.is_pitched() { if t.channel == 9 { 15 } else { t.channel } } else { 9 };
+            if t.kind.is_pitched() {
+                programs[sch as usize] = t.program(&session.style);
+            }
+        }
+        PlaybackBuffer { events, loop_start, loop_end, tempo: session.tempo, programs }
     }
 }
 
@@ -111,6 +124,12 @@ pub struct Shared {
     pub panic: AtomicU64,
     /// Hash of the persisted JSON last loaded into this state (so several instances don't reload it).
     pub loaded_hash: AtomicU64,
+    /// The loaded soundfont for the built-in synth (shared by all instances).
+    pub soundfont: Mutex<Option<Arc<rustysynth::SoundFont>>>,
+    /// Status text for the GUI ("loading…", "no soundfont", "GeneralUser GS").
+    pub soundfont_status: Mutex<String>,
+    /// Instance id that renders the built-in audio (0 = none yet); avoids doubled sound with several instances.
+    pub audio_owner: AtomicU64,
     pub chat: Mutex<Vec<ChatLine>>,
     pub agent_session_id: Mutex<Option<String>>,
     pub ui: Mutex<UiState>,
@@ -142,7 +161,37 @@ pub fn global_shared() -> Arc<Shared> {
     GLOBAL.get_or_init(|| Shared::new(Session::default())).clone()
 }
 
+/// Default soundfont location: `%LOCALAPPDATA%\FLVSTX\soundfont\GeneralUser-GS.sf2` (or `FLVSTX_SOUNDFONT`).
+pub fn soundfont_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("FLVSTX_SOUNDFONT") {
+        return p.into();
+    }
+    flvstx_core::midi::default_export_dir().parent().map(|p| p.join("soundfont").join("GeneralUser-GS.sf2")).unwrap_or_default()
+}
+
 impl Shared {
+    /// Loads the soundfont on a background thread (once).
+    pub fn load_soundfont_async(self: &Arc<Self>) {
+        if self.soundfont.lock().map(|s| s.is_some()).unwrap_or(false) {
+            return;
+        }
+        let me = self.clone();
+        std::thread::spawn(move || {
+            let path = soundfont_path();
+            *me.soundfont_status.lock().unwrap() = "soundfont: loading…".into();
+            match std::fs::File::open(&path).map_err(|e| e.to_string()).and_then(|mut f| rustysynth::SoundFont::new(&mut f).map_err(|e| e.to_string())) {
+                Ok(sf) => {
+                    let name = sf.get_info().get_bank_name().to_string();
+                    *me.soundfont.lock().unwrap() = Some(Arc::new(sf));
+                    *me.soundfont_status.lock().unwrap() = format!("sound: {}", if name.is_empty() { "soundfont".into() } else { name });
+                }
+                Err(e) => {
+                    *me.soundfont_status.lock().unwrap() = format!("no soundfont ({}): run scripts\\install.ps1", e);
+                }
+            }
+        });
+    }
+
     pub fn request_seek(&self, tick: u32) {
         let epoch = (self.seek.load(Ordering::Relaxed) >> 32) + 1;
         self.seek.store((epoch << 32) | tick as u64, Ordering::Release);
@@ -172,6 +221,9 @@ impl Shared {
             built_revision: AtomicU64::new(u64::MAX),
             panic: AtomicU64::new(0),
             loaded_hash: AtomicU64::new(0),
+            soundfont: Mutex::new(None),
+            soundfont_status: Mutex::new("soundfont: not loaded".into()),
+            audio_owner: AtomicU64::new(0),
             chat: Mutex::new(Vec::new()),
             agent_session_id: Mutex::new(None),
             ui: Mutex::new(UiState::default()),
