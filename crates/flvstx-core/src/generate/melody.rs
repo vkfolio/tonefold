@@ -74,7 +74,17 @@ fn invent_motif(key: &Key, section: &Section, style: &str, energy: f32, rng: &mu
     let tones = chord.tones_in_range(lo + 3, hi - 3);
     let start_pitch = tones.get(tones.len() / 2).copied().unwrap_or(67);
     // Contour of the motif: a short arch or a rise.
-    let shapes: [&[i32]; 6] = [&[0, 1, 2, 1, 0, -1], &[0, 2, 1, 0, 1, 2], &[0, -1, 0, 2, 1, 0], &[0, 0, 1, 2, 3, 2], &[0, 1, 0, -1, -2, 0], &[0, 2, 4, 2, 0, 1]];
+    // Degree offsets from the start pitch: mixes steps with chord-tone skips so motifs have a real shape.
+    let shapes: [&[i32]; 8] = [
+        &[0, 2, 4, 2, 0, -1],
+        &[0, -2, -3, -1, 0, 2],
+        &[0, 1, 3, 1, 0, -2],
+        &[0, 4, 2, 3, 1, 0],
+        &[0, 2, 1, -1, -2, 0],
+        &[0, -1, 1, 3, 2, 0],
+        &[0, 0, 2, 4, 3, 2],
+        &[0, 3, 2, 0, -2, -1],
+    ];
     let shape = shapes[rng.random_range(0..shapes.len())];
     let mut notes = Vec::new();
     let mut pitch;
@@ -85,21 +95,39 @@ fn invent_motif(key: &Key, section: &Section, style: &str, energy: f32, rng: &mu
         if *off % PPQ == 0 && (*off / PPQ) % 2 == 0 && !chord.contains(pitch) {
             pitch = nearest_chord_tone(chord, pitch);
         }
-        notes.push(Note::new(pitch, *off, len - len / 8, 0.8));
+        notes.push(Note::new(pitch, *off, *len, 0.8));
     }
     notes
 }
 
 fn nearest_chord_tone(chord: &crate::theory::Chord, pitch: u8) -> u8 {
+    nearest_chord_tone_avoiding(chord, pitch, None)
+}
+
+/// Nearest chord tone; when it would land on `avoid` (usually the previous note), take the next
+/// closest chord tone within a 4th so repeated notes don't pile up on strong beats.
+fn nearest_chord_tone_avoiding(chord: &crate::theory::Chord, pitch: u8, avoid: Option<u8>) -> u8 {
+    let mut best: Option<u8> = None;
+    let mut second: Option<u8> = None;
     for d in 0..=6u8 {
-        if pitch >= d && chord.contains(pitch - d) {
-            return pitch - d;
+        for cand in [pitch.checked_sub(d), pitch.checked_add(d).filter(|p| *p <= 127)].into_iter().flatten() {
+            if chord.contains(cand) && Some(cand) != best {
+                if best.is_none() {
+                    best = Some(cand);
+                } else if second.is_none() {
+                    second = Some(cand);
+                }
+            }
         }
-        if pitch + d <= 127 && chord.contains(pitch + d) {
-            return pitch + d;
+        if best.is_some() && second.is_some() {
+            break;
         }
     }
-    pitch
+    match (best, second, avoid) {
+        (Some(b), Some(s), Some(a)) if b == a && (s as i32 - pitch as i32).abs() <= 5 => s,
+        (Some(b), _, _) => b,
+        _ => pitch,
+    }
 }
 
 /// Fits a motif (relative to its first chord) onto a different chord: chord tones stay chord tones by
@@ -164,11 +192,14 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams)
         let chord = Session::chord_at(section, b * bar).map(|c| c.chord.clone()).unwrap_or_else(|| key.diatonic_chord(0, false));
 
         // Development plan: statement, repeat/vary, sequence, cadence.
+        // Statement / varied repeat / sequence a third away / cadence; the second phrase answers
+        // with inversion or a higher restatement so 8 bars are not four identical pairs.
+        let second_phrase = phrase_idx % 2 == 1;
         let (transpose, invert, vary): (i32, bool, bool) = match idx % 4 {
-            0 => (0, false, false),
-            1 => (0, false, rng.random_bool(0.6)),
-            2 => (if rng.random_bool(0.5) { 1 } else { -1 }, rng.random_bool(0.25), true),
-            _ => (0, false, true),
+            0 => (if second_phrase { 2 } else { 0 }, second_phrase && rng.random_bool(0.5), false),
+            1 => (0, false, true),
+            2 => (if rng.random_bool(0.5) { 2 } else { -2 }, rng.random_bool(0.3), rng.random_bool(0.5)),
+            _ => (if second_phrase { 1 } else { 0 }, false, true),
         };
         let mut cell = adapt_to_chord(&motif, &key, motif_root, &chord, transpose + contour_target(&contour, phrase_pos), invert, bar);
 
@@ -220,16 +251,25 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams)
             }
         }
 
+        // Breathing room: every cell ends with at least an 8th-note rest.
+        let cell_end = motif_bars * bar;
+        if let Some(last) = cell.last_mut() {
+            if last.end() + PPQ / 2 > cell_end {
+                last.len = cell_end.saturating_sub(PPQ / 2).saturating_sub(last.start).max(PPQ / 4);
+            }
+        }
         // Follow chord changes inside the cell for multi-chord bars.
+        let mut prev_pitch: Option<u8> = notes.last().map(|n| n.pitch);
         for n in cell.iter_mut() {
             let abs = b * bar + n.start;
             if let Some(ev) = Session::chord_at(section, abs) {
                 let in_bar = abs % bar;
                 let strong = in_bar % PPQ == 0;
                 if strong && !ev.chord.contains(n.pitch) {
-                    n.pitch = nearest_chord_tone(&ev.chord, n.pitch);
+                    n.pitch = nearest_chord_tone_avoiding(&ev.chord, n.pitch, prev_pitch);
                 }
             }
+            prev_pitch = Some(n.pitch);
             n.start = abs;
         }
         notes.extend(cell);
@@ -237,6 +277,18 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams)
         idx += 1;
     }
 
+    // Keep the line inside about a 10th around the motif's centre (singable), then cap leaps.
+    let center = motif.first().map(|n| n.pitch as i32).unwrap_or(67);
+    for n in notes.iter_mut() {
+        let mut p = n.pitch as i32;
+        while p > center + 9 {
+            p -= 12;
+        }
+        while p < center - 7 {
+            p += 12;
+        }
+        n.pitch = p.clamp(lo as i32, hi as i32) as u8;
+    }
     // Leap cap and register clamp, keeping scale membership.
     for i in 0..notes.len() {
         if i > 0 {

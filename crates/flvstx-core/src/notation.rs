@@ -184,9 +184,25 @@ pub fn parse_melody(text: &str, default_vel: f32) -> Result<Vec<Note>> {
 
 /// Renders notes back into melodic notation (monophonic; overlapping notes are emitted in order).
 pub fn format_melody(notes: &[Note]) -> String {
+    // Humanized notes sit off-grid; quantize to a 32nd (or 16th-triplet) grid so the text stays readable.
+    let q = |t: u32| -> u32 {
+        let g32 = PPQ / 8;
+        let g12 = PPQ / 6;
+        let a = ((t as f32 / g32 as f32).round() as u32) * g32;
+        let b = ((t as f32 / g12 as f32).round() as u32) * g12;
+        if (a as i64 - t as i64).abs() <= (b as i64 - t as i64).abs() { a } else { b }
+    };
+    let quantized: Vec<Note> = notes
+        .iter()
+        .map(|n| {
+            let start = q(n.start);
+            let end = q(n.end()).max(start + PPQ / 8);
+            Note { start, len: end - start, ..n.clone() }
+        })
+        .collect();
     let mut out = Vec::new();
     let mut cursor = 0u32;
-    let mut sorted: Vec<&Note> = notes.iter().collect();
+    let mut sorted: Vec<&Note> = quantized.iter().collect();
     sorted.sort_by_key(|n| (n.start, n.pitch));
     for n in sorted {
         if n.start > cursor {

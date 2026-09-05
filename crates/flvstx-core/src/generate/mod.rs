@@ -98,6 +98,7 @@ pub fn generate_track(session: &mut Session, role: TrackRole, section_id: &str, 
         hp.seed = params.seed.unwrap_or(session.seed);
         humanize(&mut notes, &hp, role, session.tempo, session.bar_ticks());
     }
+    clamp_to_section(&mut notes, section.bars * session.bar_ticks());
     let clip = Clip::new(notes, ClipSource::Generated { seed: params.seed.unwrap_or(session.seed), params: serde_json::to_value(params).unwrap_or_default() });
     if !session.track(role).locked {
         session.set_clip(role, &section.id, clip.clone())?;
