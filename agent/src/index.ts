@@ -54,6 +54,7 @@ class Connection implements Rpc {
   private turnActive = false;
   private sessionId = "";
   private lastContext = "";
+  private model: string | undefined = MODEL;
 
   constructor(private ws: WebSocket) {
     ws.on("message", (data) => this.onMessage(data.toString()));
@@ -104,6 +105,19 @@ class Connection implements Rpc {
         if (this.turnActive) return this.send({ type: "error", message: "a turn is already running; cancel it first" });
         if (m.session_id && !this.sessionId) this.sessionId = m.session_id;
         this.lastContext = m.context ?? "";
+        const wanted = m.model && m.model !== "default" ? m.model : MODEL;
+        if (wanted !== this.model) {
+          // Model change: end the current SDK session; the next one resumes the conversation with the new model.
+          this.model = wanted;
+          if (this.q) {
+            log(`switching model to ${wanted ?? "default"}`);
+            this.inbox.close();
+            this.q.interrupt().catch(() => {});
+            this.q = null;
+            this.running = false;
+            this.inbox = new Inbox();
+          }
+        }
         this.turnActive = true;
         const text = m.context ? `<session_state>\n${m.context}\n</session_state>\n\n${m.text}` : m.text;
         this.ensureRunning();
@@ -129,12 +143,12 @@ class Connection implements Rpc {
       this.send({ type: "tool_result", name, summary: ok ? result.slice(0, 400) : `ERROR: ${result.slice(0, 400)}` });
     });
     const resume = this.sessionId || undefined;
-    log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${MODEL ?? "default"}`);
+    log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${this.model ?? "default"}`);
     this.q = query({
       prompt: this.inbox,
       options: {
         systemPrompt: systemPrompt(),
-        model: MODEL,
+        model: this.model,
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },

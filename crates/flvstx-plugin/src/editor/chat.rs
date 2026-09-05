@@ -44,6 +44,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                     c.clear();
                 }
             }
+            let models = [("default", "default"), ("sonnet", "sonnet"), ("opus", "opus")];
+            let cur = st.model.clone();
+            egui::ComboBox::from_id_salt("model").width(80.0 * st.ui_scale).selected_text(cur.as_str()).show_ui(ui, |ui| {
+                for (label, value) in models {
+                    if ui.selectable_label(st.model == value, label).clicked() {
+                        st.model = value.to_string();
+                    }
+                }
+            });
         });
     });
     ui.separator();

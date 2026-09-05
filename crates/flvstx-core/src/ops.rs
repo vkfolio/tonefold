@@ -1,11 +1,14 @@
 //! Session operations: a JSON-in / JSON-out dispatcher used by the plugin (serving the agent's tool
 //! calls over IPC) and by the CLI chat harness. Keeping it here means the agent's tools behave the
 //! same everywhere and can be tested without a DAW.
+//!
+//! Layers are addressed by id (e.g. "melody", "arp2"), name, or kind name (first layer of that kind).
+//! Sections by id or name.
 
 use crate::analyze::analyze_clip;
-use crate::generate::{chords::suggest_progressions, generate_track, GenParams};
+use crate::generate::{chords::suggest_progressions, generate_section, generate_song, generate_track, GenParams};
 use crate::humanize::{humanize, HumanizeParams};
-use crate::model::{Clip, ClipSource, Session, TrackRole};
+use crate::model::{Clip, ClipSource, SectionRole, Session, TrackRole};
 use crate::notation::{format_chords, format_drums, format_melody, parse_chords, parse_drums, parse_melody};
 use crate::theory::{Key, ScaleKind};
 use crate::{Error, Result};
@@ -75,11 +78,16 @@ pub struct SectionSpec {
     pub name: String,
     pub bars: u32,
     #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
     pub energy: Option<f32>,
     #[serde(default)]
     pub chords: Option<String>,
     #[serde(default)]
     pub lyrics: Option<String>,
+    /// Layer ids/kinds that are silent in this section.
+    #[serde(default)]
+    pub silent_layers: Option<Vec<String>>,
 }
 
 fn arg<'a, T: serde::de::DeserializeOwned>(params: &'a Value, name: &str) -> Result<T> {
@@ -94,25 +102,34 @@ fn opt<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<Opt
     }
 }
 
-fn role_arg(params: &Value) -> Result<TrackRole> {
+/// Resolves the `track` parameter to a layer id.
+fn track_id(session: &Session, params: &Value) -> Result<String> {
     let s: String = arg(params, "track")?;
-    TrackRole::parse(&s).ok_or_else(|| Error::UnknownTrack(s))
+    session.track_by(&s).map(|t| t.id.clone()).ok_or_else(|| Error::UnknownTrack(format!("{s} (layers: {})", session.tracks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(", "))))
+}
+
+fn section_ids(session: &Session, section: &Option<String>) -> Result<Vec<String>> {
+    match section {
+        Some(id) => Ok(vec![session.section(id).map(|s| s.id.clone()).ok_or_else(|| Error::UnknownSection(id.clone()))?]),
+        None => Ok(session.sections.iter().map(|s| s.id.clone()).collect()),
+    }
 }
 
 /// Compact, LLM-friendly description of the session.
 pub fn describe(session: &Session) -> String {
     let mut s = format!(
-        "Key: {} | Tempo: {:.0} BPM | Time: {}/{} | Style: {} | Sections: {}\n",
+        "Key: {} | Tempo: {:.0} BPM | Time: {}/{} | Style: {} | Sections: {} | Layers: {}\n",
         session.key.name(),
         session.tempo,
         session.time_sig.num,
         session.time_sig.den,
         session.style,
-        session.sections.len()
+        session.sections.len(),
+        session.tracks.iter().map(|t| format!("{}{}{}", t.id, if t.kind.name() != t.id { format!("({})", t.kind.name()) } else { String::new() }, if t.locked { "[locked]" } else { "" })).collect::<Vec<_>>().join(", ")
     );
     let bar = session.bar_ticks();
     for sec in &session.sections {
-        s.push_str(&format!("\n## {} (id={}, {} bars, energy {:.2})\n", sec.name, sec.id, sec.bars, sec.energy));
+        s.push_str(&format!("\n## {} (id={}, role={}, {} bars, energy {:.2})\n", sec.name, sec.id, sec.role.name(), sec.bars, sec.energy));
         if sec.chords.is_empty() {
             s.push_str("chords: (none)\n");
         } else {
@@ -122,6 +139,10 @@ pub fn describe(session: &Session) -> String {
             s.push_str(&format!("lyrics: {}\n", l.replace('\n', " / ")));
         }
         for t in &session.tracks {
+            if !t.active_in(&sec.id) {
+                s.push_str(&format!("{}: silent in this section\n", t.id));
+                continue;
+            }
             match t.clips.get(&sec.id) {
                 Some(c) if !c.notes.is_empty() => {
                     let src = match &c.source {
@@ -130,13 +151,22 @@ pub fn describe(session: &Session) -> String {
                         ClipSource::Edited => "edited by user",
                         ClipSource::Imported => "imported",
                     };
-                    s.push_str(&format!("{}{}: {} notes ({}{})\n", t.role.name(), if t.locked { " [locked]" } else { "" }, c.notes.len(), src, if t.muted { ", muted" } else { "" }));
+                    s.push_str(&format!("{}: {} notes ({}{})\n", t.id, c.notes.len(), src, if t.muted { ", muted" } else { "" }));
                 }
-                _ => s.push_str(&format!("{}: (empty)\n", t.role.name())),
+                _ => s.push_str(&format!("{}: (empty)\n", t.id)),
             }
         }
     }
     s
+}
+
+fn clip_report(session: &Session, track: &str, section: &str, notes: &[crate::model::Note]) -> (String, String) {
+    let sec = session.section(section).cloned().unwrap();
+    let t = session.track_by(track).unwrap();
+    let notation = if t.kind.is_pitched() { format_melody(notes) } else { format_drums(notes, sec.bars, session.bar_ticks()) };
+    let mut a = analyze_clip(session, t.kind, &sec, notes);
+    a.track = t.id.clone();
+    (a.summary(), notation)
 }
 
 /// Dispatches one operation. Mutating operations snapshot for undo.
@@ -151,13 +181,12 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             Ok(out)
         }
         "get_notes" => {
-            let role = role_arg(params)?;
+            let tid = track_id(&store.session, params)?;
             let section: String = arg(params, "section")?;
             let sec = store.session.section(&section).cloned().ok_or_else(|| Error::UnknownSection(section.clone()))?;
-            let notes = store.session.clip(role, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
-            let notation = if role == TrackRole::Drums { format_drums(&notes, sec.bars, store.session.bar_ticks()) } else { format_melody(&notes) };
-            Ok(json!({ "track": role.name(), "section": sec.id, "notation": notation, "note_count": notes.len(),
-                "analysis": analyze_clip(&store.session, role, &sec, &notes).summary() }))
+            let notes = store.session.clip(&tid, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
+            let (analysis, notation) = clip_report(&store.session, &tid, &sec.id, &notes);
+            Ok(json!({ "track": tid, "section": sec.id, "notation": notation, "note_count": notes.len(), "analysis": analysis }))
         }
         "set_key_tempo" => {
             let key: Option<String> = opt(params, "key")?;
@@ -190,25 +219,41 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             let keep: Option<bool> = opt(params, "keep_existing")?;
             store.mutate(|s| {
                 let old = std::mem::take(&mut s.sections);
-                let old_clips: Vec<(TrackRole, std::collections::BTreeMap<String, Clip>)> = s.tracks.iter_mut().map(|t| (t.role, std::mem::take(&mut t.clips))).collect();
+                let old_clips: Vec<(String, std::collections::BTreeMap<String, Clip>)> = s.tracks.iter_mut().map(|t| (t.id.clone(), std::mem::take(&mut t.clips))).collect();
+                for t in s.tracks.iter_mut() {
+                    t.inactive.clear();
+                }
                 let mut ids = Vec::new();
                 for spec in specs {
                     if spec.bars == 0 || spec.bars > 128 {
                         return Err(Error::Parse(format!("section '{}': bars must be 1..128", spec.name)));
                     }
-                    let energy = spec.energy.unwrap_or_else(|| default_energy(&spec.name));
+                    let role = match &spec.role {
+                        Some(r) => SectionRole::parse(r).ok_or_else(|| Error::Parse(format!("unknown section role '{r}' (intro, verse, pre_chorus, chorus, bridge, break, build, drop, outro)")))?,
+                        None => SectionRole::from_name(&spec.name),
+                    };
+                    let energy = spec.energy.unwrap_or_else(|| role.default_energy());
                     let id = s.add_section(&spec.name, spec.bars, energy);
+                    s.section_mut(&id).unwrap().role = role;
+                    for t in s.tracks.iter_mut() {
+                        if role.default_layers_active(t.kind) {
+                            t.inactive.remove(&id);
+                        } else {
+                            t.inactive.insert(id.clone());
+                        }
+                    }
                     let bar = s.bar_ticks();
                     let key = s.key;
-                    // Reuse chords/clips from an old section with the same id when keeping.
                     if keep.unwrap_or(true) {
                         if let Some(o) = old.iter().find(|o| o.id == id) {
                             if spec.chords.is_none() {
                                 s.section_mut(&id).unwrap().chords = o.chords.iter().filter(|c| c.start < spec.bars * bar).cloned().collect();
                             }
-                            for (role, clips) in &old_clips {
+                            for (tid, clips) in &old_clips {
                                 if let Some(c) = clips.get(&id) {
-                                    s.track_mut(*role).clips.insert(id.clone(), c.clone());
+                                    if let Some(t) = s.track_by_mut(tid) {
+                                        t.clips.insert(id.clone(), c.clone());
+                                    }
                                 }
                             }
                         }
@@ -219,11 +264,69 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                     if let Some(l) = spec.lyrics {
                         s.section_mut(&id).unwrap().lyrics = Some(l);
                     }
+                    if let Some(silent) = &spec.silent_layers {
+                        for t in s.tracks.iter_mut() {
+                            t.inactive.remove(&id);
+                        }
+                        for l in silent {
+                            let tid = s.track_by(l).map(|t| t.id.clone());
+                            if let Some(tid) = tid {
+                                s.track_by_mut(&tid).unwrap().inactive.insert(id.clone());
+                            }
+                        }
+                    }
                     ids.push(id);
                 }
                 Ok(ids)
             })
             .map(|ids| json!({ "ok": true, "section_ids": ids, "summary": describe(&store.session) }))
+        }
+        "add_layer" => {
+            let kind_s: String = arg(params, "kind")?;
+            let name: Option<String> = opt(params, "name")?;
+            let kind = TrackRole::parse(&kind_s).ok_or_else(|| Error::Parse(format!("unknown layer kind '{kind_s}' (kinds: {})", TrackRole::ALL.iter().map(|k| k.name()).collect::<Vec<_>>().join(", "))))?;
+            let id = store.mutate(|s| Ok(s.add_track(kind, name.as_deref())))?;
+            let t = store.session.track_by(&id).unwrap();
+            Ok(json!({ "ok": true, "track": id, "kind": kind.name(), "channel": t.channel + 1, "summary": describe(&store.session) }))
+        }
+        "remove_layer" => {
+            let tid = track_id(&store.session, params)?;
+            store.mutate(|s| {
+                if s.tracks.len() <= 1 {
+                    return Err(Error::Parse("cannot remove the last layer".into()));
+                }
+                s.remove_track(&tid);
+                Ok(())
+            })?;
+            Ok(json!({ "ok": true, "summary": describe(&store.session) }))
+        }
+        "rename_layer" => {
+            let tid = track_id(&store.session, params)?;
+            let name: String = arg(params, "name")?;
+            store.mutate(|s| {
+                s.track_by_mut(&tid).unwrap().name = name;
+                Ok(())
+            })?;
+            Ok(json!({ "ok": true }))
+        }
+        "list_layer_kinds" => Ok(json!({ "kinds": TrackRole::ALL.iter().map(|k| json!({ "kind": k.name(), "description": k.description() })).collect::<Vec<_>>() })),
+        "set_arrangement" => {
+            let tid = track_id(&store.session, params)?;
+            let section: Option<String> = opt(params, "section")?;
+            let active: bool = arg(params, "active")?;
+            let ids = section_ids(&store.session, &section)?;
+            store.mutate(|s| {
+                let t = s.track_by_mut(&tid).unwrap();
+                for id in ids {
+                    if active {
+                        t.inactive.remove(&id);
+                    } else {
+                        t.inactive.insert(id);
+                    }
+                }
+                Ok(())
+            })?;
+            Ok(json!({ "ok": true, "summary": describe(&store.session) }))
         }
         "set_chords" => {
             let section: String = arg(params, "section")?;
@@ -246,7 +349,7 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             let apply: Option<usize> = opt(params, "apply")?;
             let sess = store.session.clone();
             let sec = sess.section(&section).cloned().ok_or_else(|| Error::UnknownSection(section.clone()))?;
-            let melody = sess.clip(TrackRole::Melody, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
+            let melody = sess.notes_of_kind(TrackRole::Melody, &sec.id);
             if melody.is_empty() {
                 return Err(Error::Parse(format!("section '{}' has no melody to harmonize; write or generate a melody first (or use suggest_chords)", sec.id)));
             }
@@ -278,13 +381,14 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             Ok(json!({ "progressions": list.iter().map(|(sym, rom)| json!({ "chords": sym, "roman": rom })).collect::<Vec<_>>() }))
         }
         "set_notes" => {
-            let role = role_arg(params)?;
+            let tid = track_id(&store.session, params)?;
             let section: String = arg(params, "section")?;
             let notation: String = arg(params, "notation")?;
             let do_humanize: Option<bool> = opt(params, "humanize")?;
             let sess = store.session.clone();
             let sec = sess.section(&section).cloned().ok_or_else(|| Error::UnknownSection(section.clone()))?;
-            let mut notes = if role == TrackRole::Drums { parse_drums(&notation)? } else { parse_melody(&notation, 0.8)? };
+            let kind = sess.track_by(&tid).unwrap().kind;
+            let mut notes = if kind.is_pitched() { parse_melody(&notation, 0.8)? } else { parse_drums(&notation)? };
             let total = sec.bars * sess.bar_ticks();
             let overflow = notes.iter().filter(|n| n.start >= total).count();
             notes.retain(|n| n.start < total);
@@ -292,73 +396,64 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                 n.len = n.len.min(total - n.start).max(1);
             }
             if do_humanize.unwrap_or(true) {
-                let mut hp = HumanizeParams::preset(role, &sess.style);
+                let mut hp = HumanizeParams::preset(kind.humanize_base(), &sess.style);
                 hp.seed = sess.seed;
-                humanize(&mut notes, &hp, role, sess.tempo, sess.bar_ticks());
+                humanize(&mut notes, &hp, kind.humanize_base(), sess.tempo, sess.bar_ticks());
             }
-            let analysis = analyze_clip(&sess, role, &sec, &notes);
+            let (analysis, _) = clip_report(&sess, &tid, &sec.id, &notes);
             store.mutate(|s| {
-                if s.track(role).locked {
-                    return Err(Error::Parse(format!("{} track is locked", role.name())));
+                if s.track_by(&tid).unwrap().locked {
+                    return Err(Error::Parse(format!("layer '{tid}' is locked")));
                 }
-                s.set_clip(role, &sec.id, Clip::new(notes.clone(), ClipSource::Agent))
+                s.set_clip(&tid, &sec.id, Clip::new(notes.clone(), ClipSource::Agent))
             })?;
-            let mut msg = analysis.summary();
+            let mut msg = analysis;
             if overflow > 0 {
                 msg.push_str(&format!("\n  ! {overflow} note(s) beyond the end of the {}-bar section were dropped", sec.bars));
             }
             Ok(json!({ "ok": true, "analysis": msg }))
         }
         "generate" => {
-            let role = role_arg(params)?;
+            let tid = track_id(&store.session, params)?;
             let section: String = arg(params, "section")?;
             let gp: GenParams = serde_json::from_value(params.get("params").cloned().unwrap_or(json!({}))).map_err(|e| Error::Parse(format!("params: {e}")))?;
-            let clip = store.mutate(|s| generate_track(s, role, &section, &gp))?;
-            let sec = store.session.section(&section).cloned().unwrap();
-            let analysis = analyze_clip(&store.session, role, &sec, &clip.notes);
-            let notation = if role == TrackRole::Drums { format_drums(&clip.notes, sec.bars, store.session.bar_ticks()) } else { format_melody(&clip.notes) };
-            Ok(json!({ "ok": true, "analysis": analysis.summary(), "notation": notation }))
+            let clip = store.mutate(|s| generate_track(s, &tid, &section, &gp))?;
+            let sec_id = store.session.section(&section).unwrap().id.clone();
+            let (analysis, notation) = clip_report(&store.session, &tid, &sec_id, &clip.notes);
+            Ok(json!({ "ok": true, "analysis": analysis, "notation": notation }))
         }
         "generate_all" => {
             let section: String = arg(params, "section")?;
             let gp: GenParams = serde_json::from_value(params.get("params").cloned().unwrap_or(json!({}))).map_err(|e| Error::Parse(format!("params: {e}")))?;
-            let mut out = Vec::new();
-            store.mutate(|s| {
-                for role in [TrackRole::Chords, TrackRole::Melody, TrackRole::Bass, TrackRole::Drums] {
-                    if s.track(role).locked {
-                        out.push(format!("{}: locked, skipped", role.name()));
-                        continue;
-                    }
-                    let clip = generate_track(s, role, &section, &gp)?;
-                    let sec = s.section(&section).cloned().unwrap();
-                    out.push(analyze_clip(s, role, &sec, &clip.notes).summary());
-                }
-                Ok(())
-            })?;
+            let done = store.mutate(|s| generate_section(s, &section, &gp))?;
+            let sec_id = store.session.section(&section).unwrap().id.clone();
+            let out: Vec<String> = done.iter().map(|(tid, clip)| clip_report(&store.session, tid, &sec_id, &clip.notes).0).collect();
             Ok(json!({ "ok": true, "analysis": out.join("\n") }))
         }
+        "generate_song" => {
+            let gp: GenParams = serde_json::from_value(params.get("params").cloned().unwrap_or(json!({}))).map_err(|e| Error::Parse(format!("params: {e}")))?;
+            let done = store.mutate(|s| generate_song(s, &gp))?;
+            Ok(json!({ "ok": true, "generated": done.len(), "summary": describe(&store.session) }))
+        }
         "humanize" => {
-            let role = role_arg(params)?;
+            let tid = track_id(&store.session, params)?;
             let section: Option<String> = opt(params, "section")?;
-            let mut hp = HumanizeParams::preset(role, &store.session.style);
-            if let Some(p) = params.get("params") {
-                if let Value::Object(map) = p {
-                    let mut base = serde_json::to_value(&hp).unwrap();
-                    for (k, v) in map {
-                        base[k] = v.clone();
-                    }
-                    hp = serde_json::from_value(base).map_err(|e| Error::Parse(format!("params: {e}")))?;
+            let kind = store.session.track_by(&tid).unwrap().kind.humanize_base();
+            let mut hp = HumanizeParams::preset(kind, &store.session.style);
+            if let Some(Value::Object(map)) = params.get("params") {
+                let mut base = serde_json::to_value(&hp).unwrap();
+                for (k, v) in map {
+                    base[k] = v.clone();
                 }
+                hp = serde_json::from_value(base).map_err(|e| Error::Parse(format!("params: {e}")))?;
             }
-            let sess = store.session.clone();
+            let ids = section_ids(&store.session, &section)?;
+            let (tempo, bar) = (store.session.tempo, store.session.bar_ticks());
             store.mutate(|s| {
-                let ids: Vec<String> = s.sections.iter().filter(|x| section.as_ref().map(|id| x.id.eq_ignore_ascii_case(id) || x.name.eq_ignore_ascii_case(id)).unwrap_or(true)).map(|x| x.id.clone()).collect();
-                if ids.is_empty() {
-                    return Err(Error::UnknownSection(section.unwrap_or_default()));
-                }
+                let t = s.track_by_mut(&tid).unwrap();
                 for id in ids {
-                    if let Some(clip) = s.track_mut(role).clips.get_mut(&id) {
-                        humanize(&mut clip.notes, &hp, role, sess.tempo, sess.bar_ticks());
+                    if let Some(clip) = t.clips.get_mut(&id) {
+                        humanize(&mut clip.notes, &hp, kind, tempo, bar);
                         clip.sort();
                     }
                 }
@@ -367,17 +462,21 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             Ok(json!({ "ok": true, "params": hp }))
         }
         "analyze" => {
-            let role: Option<String> = opt(params, "track")?;
+            let track: Option<String> = opt(params, "track")?;
             let section: Option<String> = opt(params, "section")?;
-            let roles: Vec<TrackRole> = match role {
-                Some(r) => vec![TrackRole::parse(&r).ok_or_else(|| Error::UnknownTrack(r))?],
-                None => TrackRole::ALL.to_vec(),
+            let tids: Vec<String> = match track {
+                Some(t) => vec![store.session.track_by(&t).map(|x| x.id.clone()).ok_or_else(|| Error::UnknownTrack(t))?],
+                None => store.session.tracks.iter().map(|t| t.id.clone()).collect(),
             };
             let mut lines = Vec::new();
-            for sec in store.session.sections.iter().filter(|x| section.as_ref().map(|id| x.id.eq_ignore_ascii_case(id) || x.name.eq_ignore_ascii_case(id)).unwrap_or(true)) {
-                for &r in &roles {
-                    let notes = store.session.clip(r, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
-                    lines.push(analyze_clip(&store.session, r, sec, &notes).summary());
+            for sid in section_ids(&store.session, &section)? {
+                for tid in &tids {
+                    let t = store.session.track_by(tid).unwrap();
+                    if !t.active_in(&sid) {
+                        continue;
+                    }
+                    let notes = store.session.clip(tid, &sid).map(|c| c.notes.clone()).unwrap_or_default();
+                    lines.push(clip_report(&store.session, tid, &sid, &notes).0);
                 }
             }
             Ok(json!({ "analysis": lines.join("\n") }))
@@ -396,6 +495,7 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             let name: Option<String> = opt(params, "name")?;
             let bars: Option<u32> = opt(params, "bars")?;
             let energy: Option<f32> = opt(params, "energy")?;
+            let role: Option<String> = opt(params, "role")?;
             store.mutate(|s| {
                 let sec = s.section_mut(&section).ok_or_else(|| Error::UnknownSection(section.clone()))?;
                 if let Some(n) = name {
@@ -406,6 +506,9 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                 }
                 if let Some(e) = energy {
                     sec.energy = e.clamp(0.0, 1.0);
+                }
+                if let Some(r) = role {
+                    sec.role = SectionRole::parse(&r).ok_or_else(|| Error::Parse(format!("unknown section role '{r}'")))?;
                 }
                 Ok(())
             })?;
@@ -422,32 +525,38 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                     if let Some(c) = t.clips.get(&src.id).cloned() {
                         t.clips.insert(dst_id.clone(), c);
                     }
+                    if t.inactive.contains(&src.id) {
+                        t.inactive.insert(dst_id.clone());
+                    } else {
+                        t.inactive.remove(&dst_id);
+                    }
                 }
                 Ok(())
             })?;
             Ok(json!({ "ok": true }))
         }
         "lock" => {
-            let role = role_arg(params)?;
+            let tid = track_id(&store.session, params)?;
             let locked: bool = arg(params, "locked")?;
             store.mutate(|s| {
-                s.track_mut(role).locked = locked;
+                s.track_by_mut(&tid).unwrap().locked = locked;
                 Ok(())
             })?;
             Ok(json!({ "ok": true }))
         }
         "clear" => {
-            let role: Option<String> = opt(params, "track")?;
+            let track: Option<String> = opt(params, "track")?;
             let section: Option<String> = opt(params, "section")?;
+            let tids: Vec<String> = match track {
+                Some(t) => vec![store.session.track_by(&t).map(|x| x.id.clone()).ok_or_else(|| Error::UnknownTrack(t))?],
+                None => store.session.tracks.iter().map(|t| t.id.clone()).collect(),
+            };
+            let ids = section_ids(&store.session, &section)?;
             store.mutate(|s| {
-                let roles: Vec<TrackRole> = match role {
-                    Some(r) => vec![TrackRole::parse(&r).ok_or_else(|| Error::UnknownTrack(r))?],
-                    None => TrackRole::ALL.to_vec(),
-                };
-                let ids: Vec<String> = s.sections.iter().filter(|x| section.as_ref().map(|id| x.id.eq_ignore_ascii_case(id) || x.name.eq_ignore_ascii_case(id)).unwrap_or(true)).map(|x| x.id.clone()).collect();
-                for r in roles {
+                for tid in &tids {
+                    let t = s.track_by_mut(tid).unwrap();
                     for id in &ids {
-                        s.track_mut(r).clips.remove(id);
+                        t.clips.remove(id);
                     }
                 }
                 Ok(())
@@ -455,18 +564,19 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             Ok(json!({ "ok": true }))
         }
         "transpose" => {
-            let role: Option<String> = opt(params, "track")?;
+            let track: Option<String> = opt(params, "track")?;
             let section: Option<String> = opt(params, "section")?;
             let semitones: i32 = arg(params, "semitones")?;
+            let tids: Vec<String> = match track {
+                Some(t) => vec![store.session.track_by(&t).map(|x| x.id.clone()).ok_or_else(|| Error::UnknownTrack(t))?],
+                None => store.session.tracks.iter().filter(|t| t.kind.is_pitched()).map(|t| t.id.clone()).collect(),
+            };
+            let ids = section_ids(&store.session, &section)?;
             store.mutate(|s| {
-                let roles: Vec<TrackRole> = match role {
-                    Some(r) => vec![TrackRole::parse(&r).ok_or_else(|| Error::UnknownTrack(r))?],
-                    None => vec![TrackRole::Chords, TrackRole::Melody, TrackRole::Bass],
-                };
-                let ids: Vec<String> = s.sections.iter().filter(|x| section.as_ref().map(|id| x.id.eq_ignore_ascii_case(id) || x.name.eq_ignore_ascii_case(id)).unwrap_or(true)).map(|x| x.id.clone()).collect();
-                for r in roles {
+                for tid in &tids {
+                    let t = s.track_by_mut(tid).unwrap();
                     for id in &ids {
-                        if let Some(c) = s.track_mut(r).clips.get_mut(id) {
+                        if let Some(c) = t.clips.get_mut(id) {
                             for n in c.notes.iter_mut() {
                                 n.pitch = (n.pitch as i32 + semitones).clamp(0, 127) as u8;
                             }
@@ -485,31 +595,10 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             let dir = dir.map(std::path::PathBuf::from).unwrap_or_else(crate::midi::default_export_dir);
             let files = crate::midi::export_to_dir(&store.session, section.as_deref(), &dir)?;
             Ok(json!({ "ok": true, "files": files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                "hint": "In FL Studio: open the target piano roll, then Tools > Scripts > FLVSTX Import (or drag latest.mid from the folder onto a Channel Rack slot)." }))
+                "hint": "In FL Studio: open the target piano roll, then Tools > Scripts > FLVSTX Import (or drag a .mid from the folder onto a Channel Rack slot)." }))
         }
         "list_scales" => Ok(json!({ "scales": ScaleKind::ALL.iter().map(|s| s.name()).collect::<Vec<_>>() })),
         _ => Err(Error::Parse(format!("unknown method '{method}'"))),
-    }
-}
-
-fn default_energy(name: &str) -> f32 {
-    let n = name.to_ascii_lowercase();
-    if n.contains("intro") {
-        0.3
-    } else if n.contains("verse") {
-        0.5
-    } else if n.contains("pre") {
-        0.65
-    } else if n.contains("chorus") || n.contains("drop") || n.contains("hook") {
-        0.85
-    } else if n.contains("bridge") {
-        0.55
-    } else if n.contains("outro") {
-        0.3
-    } else if n.contains("break") {
-        0.35
-    } else {
-        0.6
     }
 }
 
@@ -557,11 +646,38 @@ mod tests {
     }
 
     #[test]
+    fn layers_and_arrangement() {
+        let mut store = Store::new(Session::default());
+        dispatch(&mut store, "set_form", &json!({ "sections": [ { "name": "Intro", "bars": 4 }, { "name": "Verse", "bars": 8, "chords": "| C | Am | F | G |" }, { "name": "Chorus", "bars": 8, "chords": "| F | G | C | Am |" }, { "name": "Build", "bars": 4, "chords": "| G |" }, { "name": "Drop", "bars": 8, "chords": "| F | G | C | Am |" } ] })).unwrap();
+        for kind in ["arpeggio", "pad", "pluck", "counter_melody", "harmony", "sub", "percussion"] {
+            let r = dispatch(&mut store, "add_layer", &json!({ "kind": kind })).unwrap();
+            assert!(r["ok"].as_bool().unwrap(), "{kind}");
+        }
+        assert_eq!(store.session.tracks.len(), 11);
+        assert!(!store.session.track_by("drums").unwrap().active_in("intro"));
+        let r = dispatch(&mut store, "generate_song", &json!({ "params": { "seed": 5 } })).unwrap();
+        assert!(r["generated"].as_u64().unwrap() > 20);
+        for t in &store.session.tracks {
+            assert!(!store.session.flatten(&t.id).is_empty(), "{} produced nothing", t.id);
+        }
+        let v = store.session.clip("melody", "verse").unwrap().notes.clone();
+        let c = store.session.clip("melody", "chorus").unwrap().notes.clone();
+        assert!(!v.is_empty() && !c.is_empty());
+        let d = store.session.clip("drums", "build").unwrap().notes.clone();
+        let bar = store.session.bar_ticks();
+        assert!(d.iter().filter(|n| n.pitch == 38 && n.start >= bar * 2).count() >= 8, "build should end with a snare roll");
+        dispatch(&mut store, "set_arrangement", &json!({ "track": "arpeggio", "section": "verse", "active": false })).unwrap();
+        assert!(store.session.flatten("arpeggio").iter().all(|n| n.start < bar * 4 || n.start >= bar * 12));
+        dispatch(&mut store, "remove_layer", &json!({ "track": "pluck" })).unwrap();
+        assert_eq!(store.session.tracks.len(), 10);
+    }
+
+    #[test]
     fn demo_songs_for_all_styles() {
         for style in ["pop", "lofi", "trap", "house", "cinematic", "kids"] {
             let s = demo_session(style, "C major", 8, 3).unwrap();
-            for role in TrackRole::ALL {
-                assert!(!s.flatten(role).is_empty(), "{style} {}", role.name());
+            for t in &s.tracks {
+                assert!(!s.flatten(&t.id).is_empty(), "{style} {}", t.id);
             }
         }
     }

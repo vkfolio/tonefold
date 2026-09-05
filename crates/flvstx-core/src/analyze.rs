@@ -58,7 +58,7 @@ pub fn analyze_clip(session: &Session, role: TrackRole, section: &Section, notes
         }
     }
 
-    let out_of_key: Vec<String> = if role == TrackRole::Drums {
+    let out_of_key: Vec<String> = if !role.is_pitched() {
         vec![]
     } else {
         let mut v: Vec<String> = sorted.iter().filter(|n| !session.key.contains(n.pitch)).map(|n| format!("{}@bar{}", pitch_name(n.pitch), n.start / bar + 1)).collect();
@@ -68,7 +68,7 @@ pub fn analyze_clip(session: &Session, role: TrackRole, section: &Section, notes
     };
 
     let mut nct_strong = 0usize;
-    if role == TrackRole::Melody || role == TrackRole::Bass {
+    if matches!(role, TrackRole::Melody | TrackRole::Bass | TrackRole::CounterMelody | TrackRole::Harmony) {
         for n in &sorted {
             let in_bar = n.start % bar;
             let strong = in_bar % PPQ == 0 && (in_bar / PPQ) % 2 == 0;
@@ -120,7 +120,7 @@ pub fn analyze_clip(session: &Session, role: TrackRole, section: &Section, notes
     if role == TrackRole::Melody && rest_ratio < 0.1 && section.bars >= 4 {
         warnings.push("melody has almost no rests; phrases need breathing room".into());
     }
-    if role != TrackRole::Drums && vmax.saturating_sub(vmin) < 8 && sorted.len() > 8 {
+    if role.is_pitched() && vmax.saturating_sub(vmin) < 8 && sorted.len() > 8 {
         warnings.push("velocities are nearly uniform; humanize the part".into());
     }
     if role == TrackRole::Melody && nct_strong > sorted.len() / 3 && sorted.len() > 4 {
@@ -131,7 +131,7 @@ pub fn analyze_clip(session: &Session, role: TrackRole, section: &Section, notes
     }
     let (lo, hi) = role.register();
     let out_reg = sorted.iter().filter(|n| n.pitch < lo.saturating_sub(5) || n.pitch > hi + 5).count();
-    if out_reg > 0 && role != TrackRole::Drums {
+    if out_reg > 0 && role.is_pitched() {
         warnings.push(format!("{out_reg} note(s) far outside the usual {} register ({}..{})", role.name(), pitch_name(lo), pitch_name(hi)));
     }
 

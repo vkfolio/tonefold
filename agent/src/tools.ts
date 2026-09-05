@@ -3,7 +3,8 @@ import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Rpc } from "./protocol.js";
 
-const TRACK = z.enum(["chords", "melody", "bass", "drums"]);
+const TRACK = z.string().describe("layer id (e.g. 'melody', 'arp2'), layer name, or kind name (first layer of that kind)");
+const KIND = z.enum(["chords", "pad", "arpeggio", "pluck", "melody", "counter_melody", "harmony", "bass", "sub", "drums", "percussion"]);
 
 function text(v: unknown) {
   if (typeof v === "string") return v;
@@ -41,8 +42,8 @@ function wrap(rpc: Rpc, method: string, onCall?: (name: string, input: unknown, 
 
 export const TOOL_NAMES = [
   "get_session", "get_notes", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords",
-  "suggest_chords", "harmonize", "set_notes", "generate", "generate_all", "humanize", "analyze", "set_lyrics", "lock",
-  "clear", "transpose", "undo", "export",
+  "suggest_chords", "harmonize", "set_notes", "generate", "generate_all", "generate_song", "humanize", "analyze", "set_lyrics", "lock",
+  "clear", "transpose", "undo", "export", "add_layer", "remove_layer", "set_arrangement", "list_layer_kinds",
 ];
 
 export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, result: string, ok: boolean) => void) {
@@ -52,9 +53,12 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
       energy: z.number().min(0).max(1).optional().describe("0 sparse/quiet .. 1 dense/loud; default = section energy"),
       seed: z.number().int().optional().describe("change to get a different take"),
       motif: z.string().optional().describe("melody only: 1-2 bar motif in melodic notation to develop, e.g. 'E4:8 G4:8 A4:4 G4:4 E4:4'"),
+      from_section: z.string().optional().describe("melody only: reuse the motif of this section (default: first section with a melody)"),
+      rate: z.enum(["4", "8", "16", "32", "8t", "16t"]).optional().describe("arpeggio rate"),
+      octaves: z.number().int().min(1).max(3).optional().describe("arpeggio octaves"),
       contour: z.enum(["arch", "rise", "fall", "wave"]).optional(),
       lyrics: z.string().optional().describe("melody only: lyrics (one line per phrase) -> one syllable per note (kids/nursery mode)"),
-      pattern: z.enum(["root", "root5", "octave", "walking", "pedal", "push", "808", "pulse"]).optional().describe("bass only"),
+      pattern: z.string().optional().describe("bass: root|root5|octave|walking|pedal|push|808|pulse; arpeggio: up|down|updown|random|chord; percussion: shaker|conga|tambourine|cowbell|mixed; harmony: third|sixth|above"),
       fills: z.boolean().optional().describe("drums only: fill on the last bar of each 4-bar phrase (default true)"),
       density: z.number().min(0).max(1).optional(),
       humanize: z.boolean().optional().describe("apply humanization (default true)"),
@@ -69,12 +73,17 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
       "set_form",
       "Define the song sections in order (replaces the form; existing chords/notes for sections with the same name are kept unless overridden). Section ids are derived from names (lowercase alphanumerics).",
       {
-        sections: z.array(z.object({ name: z.string(), bars: z.number().int().min(1).max(128), energy: z.number().min(0).max(1).optional(), chords: z.string().optional().describe("chord notation, e.g. '| C | Am | F | G |' or '| I | vi | IV | V |'"), lyrics: z.string().optional() })),
+        sections: z.array(z.object({ name: z.string(), bars: z.number().int().min(1).max(128), role: z.enum(["intro", "verse", "pre_chorus", "chorus", "bridge", "break", "build", "drop", "outro", "other"]).optional().describe("defaults from the name"), energy: z.number().min(0).max(1).optional(), chords: z.string().optional().describe("chord notation, e.g. '| C | Am | F | G |' or '| I | vi | IV | V |'"), lyrics: z.string().optional(), silent_layers: z.array(z.string()).optional().describe("layer ids that do not play in this section") })),
         keep_existing: z.boolean().optional(),
       },
       wrap(rpc, "set_form", onCall),
     ),
-    tool("set_section", "Rename or resize a section, or change its energy.", { section: z.string(), name: z.string().optional(), bars: z.number().int().optional(), energy: z.number().optional() }, wrap(rpc, "set_section", onCall)),
+    tool("set_section", "Rename or resize a section, or change its energy or role.", { section: z.string(), name: z.string().optional(), bars: z.number().int().optional(), energy: z.number().optional(), role: z.enum(["intro", "verse", "pre_chorus", "chorus", "bridge", "break", "build", "drop", "outro", "other"]).optional() }, wrap(rpc, "set_section", onCall)),
+    tool("add_layer", "Add a layer (track) of a kind: chords, pad, arpeggio, pluck, melody, counter_melody, harmony, bass, sub, drums, percussion. Returns its id and MIDI channel. Kinds derive from what exists (arpeggio/pad/pluck from chords, counter_melody/harmony from the melody).", { kind: KIND, name: z.string().optional() }, wrap(rpc, "add_layer", onCall)),
+    tool("remove_layer", "Remove a layer.", { track: TRACK }, wrap(rpc, "remove_layer", onCall)),
+    tool("set_arrangement", "Make a layer play or stay silent in a section (or all sections when section is omitted). Use it for intros/breaks/outros and to bring layers in gradually.", { track: TRACK, section: z.string().optional(), active: z.boolean() }, wrap(rpc, "set_arrangement", onCall)),
+    tool("list_layer_kinds", "List the available layer kinds with descriptions.", {}, wrap(rpc, "list_layer_kinds", onCall)),
+    tool("generate_song", "Generate every active, unlocked layer in every section in dependency order, with melodic continuity across sections (chorus restates the verse motif higher) and section-role contrast (intro/break sparse, chorus/drop full, build rises into the next section).", { params: genParams }, wrap(rpc, "generate_song", onCall)),
     tool("copy_section", "Copy chords and all track notes from one section to another (e.g. verse -> verse2 before varying it).", { from: z.string(), to: z.string() }, wrap(rpc, "copy_section", onCall)),
     tool(
       "set_chords",
@@ -96,7 +105,7 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
       wrap(rpc, "set_notes", onCall),
     ),
     tool("generate", "Generate one track for a section with the rule engine (voice-led chords, motif-developed melody, bass pattern, groove drums), then humanize. Returns the notation and an analysis. Re-run with a different seed for another take, or pass a motif/lyrics/pattern to steer it.", { track: TRACK, section: z.string(), params: genParams }, wrap(rpc, "generate", onCall)),
-    tool("generate_all", "Generate chords, melody, bass and drums for a section in one go (locked tracks are skipped).", { section: z.string(), params: genParams }, wrap(rpc, "generate_all", onCall)),
+    tool("generate_all", "Generate every active, unlocked layer of a section in dependency order (chords, melody, then pads/arps/plucks, bass/sub, counter/harmony, drums/percussion).", { section: z.string(), params: genParams }, wrap(rpc, "generate_all", onCall)),
     tool(
       "humanize",
       "Re-apply humanization to a track (all sections or one). Params override the style preset: timing_ms (looseness at 16th level, 3-15), pocket_ms (negative = laid back, positive = pushed), swing (0.5 straight .. 0.66 heavy), swing_16ths, vel_jitter (0-0.15), accent (0-1), phrase_arc (0-1), gate_var (0-0.2), seed.",

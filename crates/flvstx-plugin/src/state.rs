@@ -3,7 +3,7 @@
 
 use arc_swap::ArcSwap;
 use flvstx_core::ops::Store;
-use flvstx_core::{Note, Session, TrackRole, PPQ};
+use flvstx_core::{Note, Session, PPQ};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,19 +28,19 @@ pub struct PlaybackBuffer {
 }
 
 impl PlaybackBuffer {
-    pub fn build(session: &Session, loop_section: Option<&str>, muted_roles: &[TrackRole]) -> PlaybackBuffer {
+    pub fn build(session: &Session, loop_section: Option<&str>, muted: &[String]) -> PlaybackBuffer {
         let mut events = Vec::new();
         let bar = session.bar_ticks();
         let (loop_start, loop_end) = match loop_section.and_then(|id| session.section(id).map(|s| (session.section_start(&s.id).unwrap_or(0), s.bars * bar))) {
             Some((start, len)) => (start, start + len),
             None => (0, session.total_ticks().max(bar)),
         };
-        for role in TrackRole::ALL {
-            if muted_roles.contains(&role) || session.track(role).muted {
+        for t in &session.tracks {
+            if muted.contains(&t.id) || t.muted {
                 continue;
             }
-            let ch = role.midi_channel();
-            for n in session.flatten(role) {
+            let ch = t.channel;
+            for n in session.flatten(&t.id) {
                 if n.start >= loop_end || n.end() <= loop_start {
                     continue;
                 }
@@ -80,7 +80,7 @@ pub struct Persisted {
     #[serde(default)]
     pub selected_section: Option<String>,
     #[serde(default)]
-    pub selected_track: Option<TrackRole>,
+    pub selected_track: Option<String>,
     #[serde(default)]
     pub ui_scale: Option<f32>,
 }
@@ -114,14 +114,15 @@ pub struct Shared {
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub selected_section: Option<String>,
-    pub selected_track: TrackRole,
+    /// Selected layer id.
+    pub selected_track: String,
     pub loop_section: bool,
-    pub muted: Vec<TrackRole>,
+    pub muted: Vec<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        UiState { selected_section: None, selected_track: TrackRole::Melody, loop_section: true, muted: Vec::new() }
+        UiState { selected_section: None, selected_track: "melody".into(), loop_section: true, muted: Vec::new() }
     }
 }
 
@@ -192,7 +193,7 @@ impl Shared {
             chat: self.chat.lock().map(|c| c.clone()).unwrap_or_default(),
             agent_session_id: self.agent_session_id.lock().ok().and_then(|s| s.clone()),
             selected_section: ui.selected_section,
-            selected_track: Some(ui.selected_track),
+            selected_track: Some(ui.selected_track.clone()),
             ui_scale: None,
         }
     }
@@ -219,11 +220,11 @@ impl Shared {
     }
 
     /// Marks a clip as hand-edited and bumps the revision (used by the piano roll).
-    pub fn edit_notes(&self, role: TrackRole, section: &str, f: impl FnOnce(&mut Vec<Note>)) {
+    pub fn edit_notes(&self, track: &str, section: &str, f: impl FnOnce(&mut Vec<Note>)) {
         let mut g = self.lock_store();
         let _ = g.mutate(|s| {
             let id = s.section(section).map(|x| x.id.clone()).ok_or_else(|| flvstx_core::Error::UnknownSection(section.into()))?;
-            let track = s.track_mut(role);
+            let track = s.track_by_mut(track).ok_or_else(|| flvstx_core::Error::UnknownTrack(track.into()))?;
             let clip = track.clips.entry(id).or_insert_with(|| flvstx_core::Clip::new(Vec::new(), flvstx_core::ClipSource::Edited));
             f(&mut clip.notes);
             clip.source = flvstx_core::ClipSource::Edited;

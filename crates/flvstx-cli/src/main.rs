@@ -4,7 +4,7 @@
 use anyhow::{bail, Context, Result};
 use flvstx_core::midi::{export_to_dir, write_smf, MidiTrack};
 use flvstx_core::ops::{demo_session, describe, dispatch, Store};
-use flvstx_core::{Session, TrackRole};
+use flvstx_core::Session;
 use std::path::PathBuf;
 
 const USAGE: &str = "flvstx-cli <command> [args]
@@ -32,8 +32,8 @@ fn save(path: &str, s: &Session) -> Result<()> {
 }
 
 fn render(session: &Session, out: &PathBuf) -> Result<()> {
-    let all: Vec<(TrackRole, Vec<flvstx_core::Note>)> = TrackRole::ALL.iter().map(|&r| (r, session.flatten(r))).collect();
-    let tracks: Vec<MidiTrack> = all.iter().map(|(r, n)| MidiTrack { name: r.name(), channel: r.midi_channel(), notes: n }).collect();
+    let all: Vec<(String, u8, Vec<flvstx_core::Note>)> = session.tracks.iter().map(|t| (t.id.clone(), t.channel, session.flatten(&t.id))).collect();
+    let tracks: Vec<MidiTrack> = all.iter().map(|(id, ch, n)| MidiTrack { name: id, channel: *ch, notes: n }).collect();
     write_smf(out, session.tempo, (session.time_sig.num, session.time_sig.den), &tracks)?;
     println!("wrote {}", out.display());
     Ok(())

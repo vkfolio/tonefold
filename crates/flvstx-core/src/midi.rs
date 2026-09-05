@@ -1,6 +1,6 @@
 //! Standard MIDI file I/O via `midly`, plus the JSON export consumed by the FL piano-roll script.
 
-use crate::model::{Note, Session, TrackRole, PPQ};
+use crate::model::{Note, Session, PPQ};
 use crate::{Error, Result};
 use midly::num::{u15, u24, u28, u4, u7};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
@@ -143,18 +143,20 @@ pub struct ExportNote {
 
 /// Builds the export for the whole song (or one section when `section` is given) for all tracks.
 pub fn export_session(session: &Session, section: Option<&str>) -> Result<ExportFile> {
-    let mut tracks = Vec::new();
-    for role in TrackRole::ALL {
-        let notes: Vec<Note> = match section {
-            Some(id) => session.clip(role, id).map(|c| c.notes.clone()).unwrap_or_default(),
-            None => session.flatten(role),
-        };
-        if section.is_some() && session.section(section.unwrap()).is_none() {
-            return Err(Error::UnknownSection(section.unwrap().into()));
+    if let Some(id) = section {
+        if session.section(id).is_none() {
+            return Err(Error::UnknownSection(id.into()));
         }
+    }
+    let mut tracks = Vec::new();
+    for (i, t) in session.tracks.iter().enumerate() {
+        let notes: Vec<Note> = match section {
+            Some(id) => if t.active_in(&session.section(id).unwrap().id) { session.clip(&t.id, id).map(|c| c.notes.clone()).unwrap_or_default() } else { Vec::new() },
+            None => session.flatten(&t.id),
+        };
         tracks.push(ExportTrack {
-            name: role.name().to_string(),
-            notes: notes.iter().map(|n| ExportNote { pitch: n.pitch, start: n.start, len: n.len, vel: n.vel, color: role as u8 }).collect(),
+            name: t.id.clone(),
+            notes: notes.iter().map(|n| ExportNote { pitch: n.pitch, start: n.start, len: n.len, vel: n.vel, color: (i % 16) as u8 }).collect(),
         });
     }
     Ok(ExportFile { ppq: PPQ, tempo: session.tempo, tracks })
@@ -169,18 +171,19 @@ pub fn export_to_dir(session: &Session, section: Option<&str>, dir: &std::path::
     std::fs::write(&json, serde_json::to_vec_pretty(&export).map_err(|e| Error::Midi(e.to_string()))?)?;
     written.push(json);
     let ts = (session.time_sig.num, session.time_sig.den);
-    let all: Vec<(TrackRole, Vec<Note>)> = TrackRole::ALL
+    let all: Vec<(String, u8, Vec<Note>)> = session
+        .tracks
         .iter()
-        .map(|&r| (r, match section { Some(id) => session.clip(r, id).map(|c| c.notes.clone()).unwrap_or_default(), None => session.flatten(r) }))
+        .map(|t| (t.id.clone(), t.channel, match section { Some(id) => if t.active_in(&session.section(id).unwrap().id) { session.clip(&t.id, id).map(|c| c.notes.clone()).unwrap_or_default() } else { Vec::new() }, None => session.flatten(&t.id) }))
         .collect();
-    let tracks: Vec<MidiTrack> = all.iter().map(|(r, n)| MidiTrack { name: r.name(), channel: r.midi_channel(), notes: n }).collect();
+    let tracks: Vec<MidiTrack> = all.iter().map(|(id, ch, n)| MidiTrack { name: id, channel: *ch, notes: n }).collect();
     let mid = dir.join("latest.mid");
     write_smf(&mid, session.tempo, ts, &tracks)?;
     written.push(mid);
-    for (r, n) in &all {
+    for (id, ch, n) in &all {
         if !n.is_empty() {
-            let p = dir.join(format!("{}.mid", r.name()));
-            write_smf(&p, session.tempo, ts, &[MidiTrack { name: r.name(), channel: r.midi_channel(), notes: n }])?;
+            let p = dir.join(format!("{}.mid", id));
+            write_smf(&p, session.tempo, ts, &[MidiTrack { name: id, channel: *ch, notes: n }])?;
             written.push(p);
         }
     }

@@ -1,8 +1,8 @@
 //! Bass lines: pattern library selected by style and energy, following the chord roots (slash bass
 //! respected), with approach notes into chord changes and space where the melody is busy.
 
-use super::{clamp_to_section, GenParams};
-use crate::model::{Note, Section, Session, TrackRole, PPQ};
+use super::{clamp_to_section, GenParams, SongCtx};
+use crate::model::{Note, Section, SectionRole, Session, TrackRole, PPQ};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,11 +62,16 @@ fn root_in_register(pc: u8) -> u8 {
     p
 }
 
-pub fn generate_bass(session: &Session, section: &Section, params: &GenParams) -> Vec<Note> {
+pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let style = params.style(session).to_ascii_lowercase();
-    let energy = params.energy(section);
+    let energy = ctx.effective_energy(params.energy(section));
     let mut rng = params.rng(session, 31);
-    let pattern = pick_pattern(&style, energy, params.pattern.as_deref(), &mut rng);
+    let mut pattern = pick_pattern(&style, energy, params.pattern.as_deref(), &mut rng);
+    if params.pattern.is_none() && matches!(ctx.role, SectionRole::Intro | SectionRole::Break | SectionRole::Outro) {
+        pattern = Pattern::Root;
+    } else if params.pattern.is_none() && matches!(ctx.role, SectionRole::Chorus | SectionRole::Drop) && energy > 0.7 && !style.contains("trap") {
+        pattern = if style.contains("house") || style.contains("edm") { Pattern::Octave } else { Pattern::Pulse8 };
+    }
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let key = session.key;
@@ -76,7 +81,7 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams) -
     let base_vel = 0.7 + energy * 0.2;
 
     // Melody density per beat, to leave space when the melody is busy (call and response).
-    let melody = session.clip(TrackRole::Melody, &section.id).map(|c| c.notes.clone()).unwrap_or_default();
+    let melody = session.notes_of_kind(TrackRole::Melody, &section.id);
     let beat_busy = |t: u32| melody.iter().filter(|n| n.start >= t && n.start < t + q).count() >= 2;
 
     for (ci, ev) in section.chords.iter().enumerate() {
@@ -202,7 +207,7 @@ mod tests {
         let sec = s.section(&id).unwrap().clone();
         for pat in ["root", "root5", "octave", "walking", "pedal", "push", "808", "pulse"] {
             let p = GenParams { pattern: Some(pat.into()), ..Default::default() };
-            let notes = generate_bass(&s, &sec, &p);
+            let notes = generate_bass(&s, &sec, &p, super::SongCtx::of(&s, &sec.id));
             assert!(!notes.is_empty(), "{pat}");
             if pat != "pedal" {
                 let first_of_bar3 = notes.iter().find(|n| n.start == s.bar_ticks() * 2).unwrap();

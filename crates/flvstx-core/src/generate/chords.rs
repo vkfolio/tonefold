@@ -1,8 +1,8 @@
 //! Chord progression suggestion (genre-weighted functional harmony) and chord-track rendering
 //! (voice-led block chords, or rhythmic comping patterns by style/energy).
 
-use super::{clamp_to_section, GenParams};
-use crate::model::{ChordEvent, Note, Section, Session, PPQ};
+use super::{clamp_to_section, GenParams, SongCtx};
+use crate::model::{ChordEvent, Note, Section, SectionRole, Session, PPQ};
 use crate::theory::{Chord, ChordQuality, Extension, Key};
 use crate::voicing::{voice_lead, VoicingParams};
 use rand::Rng;
@@ -95,9 +95,12 @@ pub fn colorize(chords: &mut [ChordEvent], style: &str, rng: &mut impl Rng) {
 }
 
 /// Renders the section's chord events into notes with a comping pattern chosen by style and energy.
-pub fn render_chords(session: &Session, section: &Section, params: &GenParams) -> Vec<Note> {
+pub fn render_chords(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let style = params.style(session).to_ascii_lowercase();
-    let energy = params.energy(section);
+    let energy = ctx.effective_energy(params.energy(section));
+    // Intros/breaks/outros: hold chords; choruses: fuller voicings.
+    let held = matches!(ctx.role, SectionRole::Intro | SectionRole::Break | SectionRole::Outro);
+    let big = matches!(ctx.role, SectionRole::Chorus | SectionRole::Drop);
     let mut rng = params.rng(session, 11);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
@@ -106,7 +109,7 @@ pub fn render_chords(session: &Session, section: &Section, params: &GenParams) -
     let edm = style.contains("edm") || style.contains("house") || style.contains("dance") || style.contains("techno");
     let hip = style.contains("hip") || style.contains("trap") || style.contains("lofi") || style.contains("lo-fi");
 
-    let vp = VoicingParams { lo: 52, hi: 76, voices: if cine { 4 } else { 3 + (energy > 0.4) as usize }, avoid_root_on_top: true, add_low_root: cine || kids };
+    let vp = VoicingParams { lo: 52, hi: 76, voices: if cine || big { 4 } else { 3 + (energy > 0.4) as usize }, avoid_root_on_top: true, add_low_root: cine || kids || big };
     let voicings = voice_lead(&section.chords, &vp);
     let base_vel = 0.55 + energy * 0.3;
     let mut notes = Vec::new();
@@ -116,7 +119,7 @@ pub fn render_chords(session: &Session, section: &Section, params: &GenParams) -
             continue;
         }
         // Choose a pattern: pads hold; kids/pop play on beats; edm stabs off-beats; hip-hop lets chords ring with a pickup.
-        let pattern: Vec<(u32, u32, f32)> = if cine || energy < 0.25 {
+        let pattern: Vec<(u32, u32, f32)> = if cine || energy < 0.25 || held {
             vec![(0, ev.len, 1.0)]
         } else if edm && energy > 0.5 {
             // Off-beat 8th stabs.
@@ -200,7 +203,7 @@ mod tests {
         let ev = parse_chords("| C | Am | F | G |", &s.key, 4, s.bar_ticks()).unwrap();
         s.section_mut(&id).unwrap().chords = ev;
         let sec = s.section(&id).unwrap().clone();
-        let notes = render_chords(&s, &sec, &GenParams::default());
+        let notes = render_chords(&s, &sec, &GenParams::default(), super::SongCtx::of(&s, &sec.id));
         assert!(notes.len() >= 12);
         assert!(notes.iter().all(|n| n.end() <= s.bar_ticks() * 4));
     }

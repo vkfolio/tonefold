@@ -34,7 +34,7 @@ pub struct PianoRollView {
     pub selection: HashSet<usize>,
     drag: Option<Drag>,
     pub snap_div: u32,
-    last_track: Option<TrackRole>,
+    last_track: Option<String>,
     last_section: Option<String>,
 }
 
@@ -51,35 +51,39 @@ fn snap(tick: f32, div: u32) -> u32 {
 
 pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
     let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
-    let role = ui_state.selected_track;
-    let (section, key, bar_ticks, notes) = {
+    let track_id = ui_state.selected_track.clone();
+    let (section, key, bar_ticks, notes, role, track_name, active) = {
         let g = shared.lock_store();
         let sec = ui_state.selected_section.as_ref().and_then(|id| g.session.section(id).cloned());
-        let notes = sec.as_ref().and_then(|s| g.session.clip(role, &s.id).map(|c| c.notes.clone())).unwrap_or_default();
-        (sec, g.session.key, g.session.bar_ticks(), notes)
+        let t = g.session.track_by(&track_id).cloned();
+        let notes = sec.as_ref().and_then(|s| g.session.clip(&track_id, &s.id).map(|c| c.notes.clone())).unwrap_or_default();
+        let role = t.as_ref().map(|t| t.kind).unwrap_or(TrackRole::Melody);
+        let active = match (&t, &sec) { (Some(t), Some(s)) => t.active_in(&s.id), _ => true };
+        (sec, g.session.key, g.session.bar_ticks(), notes, role, t.map(|t| t.name).unwrap_or_default(), active)
     };
     let Some(section) = section else {
         ui.centered_and_justified(|ui| ui.label("Add a section (top bar) or ask the composer for a song to get started."));
         return;
     };
     // Reset view when switching context.
-    if view.last_track != Some(role) || view.last_section.as_deref() != Some(section.id.as_str()) {
+    if view.last_track.as_deref() != Some(track_id.as_str()) || view.last_section.as_deref() != Some(section.id.as_str()) {
         view.selection.clear();
         view.drag = None;
-        view.last_track = Some(role);
+        view.last_track = Some(track_id.clone());
         view.last_section = Some(section.id.clone());
         let (lo, hi) = role.register();
         view.top_pitch = (hi + 5) as f32;
         let _ = lo;
         view.scroll_x = 0.0;
     }
-    let drums = role == TrackRole::Drums;
+    let drums = !role.is_pitched();
     let total_ticks = section.bars * bar_ticks;
     let color = track_color(role);
+    let role = track_id.as_str();
 
     // Toolbar.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{} · {}", role.name(), section.name)).strong().color(color));
+        ui.label(egui::RichText::new(format!("{} · {}{}", track_name, section.name, if active { "" } else { " (silent here)" })).strong().color(color));
         ui.label("snap");
         egui::ComboBox::from_id_salt("snap").width(56.0).selected_text(format!("1/{}", view.snap_div)).show_ui(ui, |ui| {
             for d in [4u32, 8, 16, 32, 12, 24] {
@@ -511,7 +515,8 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
     }
 }
 
-fn preview(shared: &Shared, role: TrackRole, pitch: u8, vel: f32) {
+fn preview(shared: &Shared, track: &str, pitch: u8, vel: f32) {
     let v = ((vel.clamp(0.05, 1.0) * 127.0) as u32).max(1);
-    shared.preview.store(((role.midi_channel() as u32) << 16) | ((pitch as u32) << 8) | v, Ordering::Release);
+    let ch = shared.lock_store().session.track_by(track).map(|t| t.channel).unwrap_or(0);
+    shared.preview.store(((ch as u32) << 16) | ((pitch as u32) << 8) | v, Ordering::Release);
 }

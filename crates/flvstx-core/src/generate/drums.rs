@@ -1,8 +1,8 @@
 //! Drum patterns: backbeat grammar per style, hat subdivision by energy, ghost notes, open-hat
 //! accents, Euclidean percussion layers and fills at phrase boundaries.
 
-use super::{clamp_to_section, GenParams};
-use crate::model::{Note, Section, Session, PPQ};
+use super::{clamp_to_section, GenParams, SongCtx};
+use crate::model::{Note, Section, SectionRole, Session, PPQ};
 use rand::Rng;
 
 pub const KICK: u8 = 36;
@@ -78,9 +78,9 @@ fn style_of(s: &str, energy: f32) -> Style {
     }
 }
 
-pub fn generate_drums(session: &Session, section: &Section, params: &GenParams) -> Vec<Note> {
+pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let style_str = params.style(session).to_ascii_lowercase();
-    let energy = params.energy(section);
+    let energy = ctx.effective_energy(params.energy(section));
     let density = params.density.unwrap_or(energy);
     let mut rng = params.rng(session, 41);
     let st = style_of(&style_str, energy);
@@ -234,6 +234,28 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams) 
             }
         }
     }
+    // Build: snare roll rising into the next section over the last bar (or two).
+    if matches!(ctx.role, SectionRole::Build) && section.bars >= 2 {
+        let roll_bars = if section.bars >= 4 { 2 } else { 1 };
+        let roll_start = (section.bars - roll_bars) * bar;
+        notes.retain(|n| n.start < roll_start || n.pitch == KICK);
+        let mut t = roll_start;
+        let mut i = 0u32;
+        while t < total {
+            let frac = (t - roll_start) as f32 / (total - roll_start) as f32;
+            let step = if frac < 0.5 { s16 } else { s16 / 2 };
+            notes.push(Note::new(SNARE, t, step, 0.35 + 0.65 * frac));
+            if i % 4 == 0 {
+                notes.push(Note::new(KICK, t, e, 0.8 + 0.2 * frac));
+            }
+            t += step;
+            i += 1;
+        }
+        notes.push(Note::new(CRASH, total.saturating_sub(s16), s16, 0.9));
+    }
+    if matches!(ctx.role, SectionRole::Intro) {
+        notes.retain(|n| n.pitch != CRASH);
+    }
     // Rim instead of snare for very quiet sections.
     if energy < 0.25 {
         for n in notes.iter_mut() {
@@ -268,7 +290,7 @@ mod tests {
         s.style = "pop".into();
         let id = s.add_section("A", 8, 0.7);
         let sec = s.section(&id).unwrap().clone();
-        let notes = generate_drums(&s, &sec, &GenParams::default());
+        let notes = generate_drums(&s, &sec, &GenParams::default(), super::SongCtx::of(&s, &sec.id));
         let bar = s.bar_ticks();
         assert!(notes.iter().any(|n| n.pitch == SNARE && n.start == PPQ));
         assert!(notes.iter().any(|n| n.pitch == KICK && n.start == 0));

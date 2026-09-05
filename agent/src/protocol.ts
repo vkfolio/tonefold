@@ -1,7 +1,7 @@
 // Wire types shared with the Rust side (docs/protocol.md).
 
 export type ClientMessage =
-  | { type: "user_message"; text: string; context?: string; session_id?: string | null }
+  | { type: "user_message"; text: string; context?: string; session_id?: string | null; model?: string | null }
   | { type: "rpc_result"; id: number; ok: boolean; result?: unknown; error?: string }
   | { type: "cancel" }
   | { type: "ping" };

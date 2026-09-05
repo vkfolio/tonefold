@@ -47,7 +47,7 @@ impl HumanizeParams {
     pub fn preset(role: TrackRole, style: &str) -> Self {
         let s = style.to_ascii_lowercase();
         let mut p = HumanizeParams::default();
-        match role {
+        match role.humanize_base() {
             TrackRole::Drums => {
                 p.timing_ms = 6.0;
                 p.accent = 0.7;
@@ -69,6 +69,7 @@ impl HumanizeParams {
                 p.accent = 0.5;
                 p.gate_var = 0.12;
             }
+            _ => {}
         }
         if s.contains("lofi") || s.contains("lo-fi") || s.contains("hip") || s.contains("trap") || s.contains("boom") {
             p.swing = if s.contains("trap") { 0.54 } else { 0.6 };

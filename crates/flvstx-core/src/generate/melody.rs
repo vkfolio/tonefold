@@ -3,8 +3,8 @@
 //! chord changes (chord tones on strong beats, scale tones elsewhere), a contour target, a leap cap
 //! and a rest budget. Phrases follow an antecedent/consequent shape.
 
-use super::{clamp_to_section, GenParams};
-use crate::model::{Note, Section, Session, TrackRole, PPQ};
+use super::{clamp_to_section, GenParams, SongCtx};
+use crate::model::{Note, Section, SectionRole, Session, TrackRole, PPQ};
 use crate::notation::parse_melody;
 use crate::theory::Key;
 use rand::Rng;
@@ -164,19 +164,43 @@ fn contour_target(contour: &str, phrase_pos: f32) -> i32 {
     }
 }
 
-pub fn generate_melody(session: &Session, section: &Section, params: &GenParams) -> Vec<Note> {
+pub fn generate_melody(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let key = session.key;
     let style = params.style(session).to_ascii_lowercase();
-    let energy = params.energy(section);
+    let energy = ctx.effective_energy(params.energy(section));
     let mut rng = params.rng(session, 21);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let contour = params.contour.clone().unwrap_or_else(|| "arch".into());
     let (lo, hi) = TrackRole::Melody.register();
 
-    let motif: Vec<Note> = match params.motif.as_deref().and_then(|m| parse_melody(m, 0.8).ok()).filter(|m| !m.is_empty()) {
+    // Continuity: reuse the song's motif (first section that already has a melody, or the section
+    // named in `from_section`) unless a motif is given; choruses restate it higher with longer notes.
+    let source_motif: Option<Vec<Note>> = {
+        let from = params.from_section.clone().or_else(|| {
+            session.sections.iter().find(|s| s.id != section.id && session.track_of_kind(TrackRole::Melody).and_then(|t| t.clips.get(&s.id)).map(|c| !c.notes.is_empty()).unwrap_or(false)).map(|s| s.id.clone())
+        });
+        from.and_then(|sid| session.track_of_kind(TrackRole::Melody).and_then(|t| t.clips.get(&sid)).map(|c| c.notes.clone())).and_then(|notes| {
+            let first_bar: Vec<Note> = notes.iter().filter(|n| n.start < bar).cloned().collect();
+            if first_bar.len() >= 2 { Some(first_bar) } else { None }
+        })
+    };
+    let mut motif: Vec<Note> = match params.motif.as_deref().and_then(|m| parse_melody(m, 0.8).ok()).filter(|m| !m.is_empty()) {
         Some(m) => m,
-        None => invent_motif(&key, section, &style, energy, &mut rng),
+        None => match source_motif {
+            Some(m) => m,
+            None => invent_motif(&key, section, &style, energy, &mut rng),
+        },
+    };
+    // Quantize a reused (humanized) motif back to the 16th grid.
+    for n in motif.iter_mut() {
+        n.start = (n.start + PPQ / 8) / (PPQ / 4) * (PPQ / 4);
+        n.len = ((n.len + PPQ / 8) / (PPQ / 4) * (PPQ / 4)).max(PPQ / 4);
+    }
+    let chorus_lift: i32 = match ctx.role {
+        SectionRole::Chorus | SectionRole::Drop => 2,
+        SectionRole::Bridge => -1,
+        _ => 0,
     };
     let motif_bars = ((motif.iter().map(|n| n.end()).max().unwrap_or(bar) + bar - 1) / bar).max(1);
     let motif_root = Session::chord_at(section, 0).map(|c| c.chord.root).unwrap_or(key.root);
@@ -196,10 +220,10 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams)
         // with inversion or a higher restatement so 8 bars are not four identical pairs.
         let second_phrase = phrase_idx % 2 == 1;
         let (transpose, invert, vary): (i32, bool, bool) = match idx % 4 {
-            0 => (if second_phrase { 2 } else { 0 }, second_phrase && rng.random_bool(0.5), false),
-            1 => (0, false, true),
-            2 => (if rng.random_bool(0.5) { 2 } else { -2 }, rng.random_bool(0.3), rng.random_bool(0.5)),
-            _ => (if second_phrase { 1 } else { 0 }, false, true),
+            0 => (chorus_lift + if second_phrase { 2 } else { 0 }, second_phrase && rng.random_bool(0.5), false),
+            1 => (chorus_lift, false, true),
+            2 => (chorus_lift + if rng.random_bool(0.5) { 2 } else { -2 }, rng.random_bool(0.3), rng.random_bool(0.5)),
+            _ => (chorus_lift + if second_phrase { 1 } else { 0 }, false, true),
         };
         let mut cell = adapt_to_chord(&motif, &key, motif_root, &chord, transpose + contour_target(&contour, phrase_pos), invert, bar);
 
@@ -277,6 +301,24 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams)
         idx += 1;
     }
 
+    // Chorus/drop: longer, more sustained notes (merge repeated pitches); intro/outro: thin out.
+    if matches!(ctx.role, SectionRole::Chorus | SectionRole::Drop) {
+        let mut merged: Vec<Note> = Vec::new();
+        for n in notes.drain(..) {
+            match merged.last_mut() {
+                Some(l) if l.pitch == n.pitch && l.end() >= n.start && n.start % bar != 0 => l.len = n.end() - l.start,
+                _ => merged.push(n),
+            }
+        }
+        notes = merged;
+    } else if matches!(ctx.role, SectionRole::Intro | SectionRole::Outro | SectionRole::Break) {
+        let keep_every = 3;
+        let mut i = 0;
+        notes.retain(|n| {
+            i += 1;
+            n.start % PPQ == 0 || i % keep_every != 0
+        });
+    }
     // Keep the line inside about a 10th around the motif's centre (singable), then cap leaps.
     let center = motif.first().map(|n| n.pitch as i32).unwrap_or(67);
     for n in notes.iter_mut() {
@@ -337,7 +379,7 @@ mod tests {
     #[test]
     fn melody_is_musical() {
         let (s, sec) = session();
-        let notes = generate_melody(&s, &sec, &GenParams::default());
+        let notes = generate_melody(&s, &sec, &GenParams::default(), super::SongCtx::of(&s, &sec.id));
         assert!(notes.len() >= 16, "got {}", notes.len());
         for n in &notes {
             assert!(s.key.contains(n.pitch), "{} out of key", n.pitch);
@@ -358,7 +400,7 @@ mod tests {
     fn uses_given_motif() {
         let (s, sec) = session();
         let p = GenParams { motif: Some("E4:8 G4:8 A4:4 G4:4 E4:4".into()), ..Default::default() };
-        let notes = generate_melody(&s, &sec, &p);
+        let notes = generate_melody(&s, &sec, &p, super::SongCtx::of(&s, &sec.id));
         assert_eq!(notes[0].pitch, 64);
         assert_eq!(notes[1].start, PPQ / 2);
     }

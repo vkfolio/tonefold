@@ -28,31 +28,23 @@ pub struct Flvstx {
     preview_off_at: Option<(u32, u8, u8)>,
 }
 
-/// Which tracks this instance sends to its MIDI output. FL routes one plugin per MIDI port, so run one
-/// instance per instrument (Chords → keys, Melody → lead, …) and pick the track here; "All" sends
-/// everything on channels 1/2/3/10 (use Patcher or a multi-timbral instrument).
+/// Which MIDI channel this instance sends. Every layer has its own channel (shown in the layer list),
+/// so run one instance per FL instrument and pick that layer's channel here; "All" sends everything.
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputSelect {
     #[id = "all"]
     All,
-    #[id = "chords"]
-    Chords,
-    #[id = "melody"]
-    Melody,
-    #[id = "bass"]
-    Bass,
-    #[id = "drums"]
-    Drums,
+    #[id = "ch1"] Ch1, #[id = "ch2"] Ch2, #[id = "ch3"] Ch3, #[id = "ch4"] Ch4,
+    #[id = "ch5"] Ch5, #[id = "ch6"] Ch6, #[id = "ch7"] Ch7, #[id = "ch8"] Ch8,
+    #[id = "ch9"] Ch9, #[id = "ch10"] Ch10, #[id = "ch11"] Ch11, #[id = "ch12"] Ch12,
+    #[id = "ch13"] Ch13, #[id = "ch14"] Ch14, #[id = "ch15"] Ch15, #[id = "ch16"] Ch16,
 }
 
 impl OutputSelect {
     fn allows(self, channel: u8) -> bool {
         match self {
             OutputSelect::All => true,
-            OutputSelect::Chords => channel == 0,
-            OutputSelect::Melody => channel == 1,
-            OutputSelect::Bass => channel == 2,
-            OutputSelect::Drums => channel == 9,
+            other => (other as usize as u8) == channel + 1,
         }
     }
 }

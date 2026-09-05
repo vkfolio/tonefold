@@ -76,8 +76,13 @@ impl AgentClient {
 
     /// Sends a chat turn; `context` should be the compact session summary.
     pub fn send_user_message(&self, text: &str, context: &str) {
+        self.send_user_message_with_model(text, context, None);
+    }
+
+    /// Sends a chat turn, optionally switching the model ("sonnet", "opus", or a full model id).
+    pub fn send_user_message_with_model(&self, text: &str, context: &str, model: Option<&str>) {
         let sid = self.session_id.lock().ok().and_then(|s| s.clone());
-        let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid });
+        let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid, "model": model });
         let _ = self.tx.send(Outgoing::Text(msg.to_string()));
     }
 

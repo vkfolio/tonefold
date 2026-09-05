@@ -13,6 +13,7 @@ pub mod voicing;
 
 pub use model::*;
 pub use theory::{Chord, ChordQuality, Key, ScaleKind};
+pub use generate::SongCtx;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
