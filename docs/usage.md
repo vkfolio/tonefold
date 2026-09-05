@@ -8,11 +8,11 @@ cd agent && npm install && npm run build && cd ..
 powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 
-`install.ps1` copies `FLVSTX.clap` to `%LOCALAPPDATA%\Programs\Common\CLAP`, `FLVSTX.vst3` to
-`%LOCALAPPDATA%\Programs\Common\VST3`, and the piano-roll script to
+`install.ps1` copies `FLVSTX.clap` to `C:\Program Files\Common Files\CLAP`, `FLVSTX.vst3` to
+`C:\Program Files\Common Files\VST3`, and the piano-roll script to
 `Documents\Image-Line\FL Studio\Settings\Piano roll scripts`. In FL Studio run
-**Options > Manage plugins > Find more plugins** (make sure both per-user folders are in the search
-paths; add them with the folder icon if not) and enable FLVSTX. Prefer the **CLAP** build in FL Studio.
+**Options > Manage plugins > Find installed plugins** (the machine-wide Common Files folders are scanned
+by default; do not add custom paths, FL treats added paths as VST2) and favourite FLVSTX. Prefer the **CLAP** build in FL Studio.
 
 The composer sidecar needs Node 22 and your Claude Code login (`claude` must be logged in on this
 PC). The plugin starts `node agent/dist/index.js --port 7878` on the first chat message; set

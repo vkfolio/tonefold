@@ -29,20 +29,21 @@ You need: FL Studio 2024 or newer, Node.js 22, Rust (for building), and Claude C
 2. Check Claude is logged in: run `claude` in a terminal once; if it asks you to log in, do it, then exit.
 
 You should now have:
-- `%LOCALAPPDATA%\Programs\Common\CLAP\FLVSTX.clap`
-- `%LOCALAPPDATA%\Programs\Common\VST3\FLVSTX.vst3`
+- `C:\Program Files\Common Files\CLAP\FLVSTX.clap`
+- `C:\Program Files\Common Files\VST3\FLVSTX.vst3`
 - `Documents\Image-Line\FL Studio\Settings\Piano roll scripts\FLVSTX Import.pyscript`
 
 ## Part 2 · Make FL Studio see the plugin (once)
 
 1. Open FL Studio. Menu **Options > Manage plugins**.
-2. On the left, under *Plugin search paths*, make sure these folders are listed (add them with the folder
-   icon if not):
-   - `C:\Users\<you>\AppData\Local\Programs\Common\CLAP`
-   - `C:\Users\<you>\AppData\Local\Programs\Common\VST3`
-3. Click **Find more plugins** (top left). Wait for the scan.
-4. In the list, find **FLVSTX**. You will see two entries (CLAP and VST3). Tick the star / **Favorite**
-   on the **CLAP** one so it appears in the Add menu. Use CLAP in FL Studio; VST3 MIDI output is unreliable in FL.
+2. The installer put the files in the standard folders FL already scans (`C:\Program Files\Common Files\CLAP`
+   and `...\VST3`), so do not add search paths. If you added `AppData\Local\Programs\Common\...` paths
+   earlier, remove them (select the path, press the minus icon): FL registers added paths as VST2 and ignores
+   CLAP/VST3 files in them.
+3. Tick **Rescan previously verified plugins**, then click **Find installed plugins** (top left). Wait for the scan.
+4. Type **FLVSTX** in the **Find** box at the bottom right. You should see FLVSTX with format **CLAP** (and
+   one with **VST3**). Click the star on the **CLAP** row to favourite it so it appears in the Add menu.
+   Use CLAP in FL Studio; VST3 MIDI output is unreliable in FL.
 5. Close Manage plugins.
 
 ## Part 3 · Set up a project for the song (every new song)
