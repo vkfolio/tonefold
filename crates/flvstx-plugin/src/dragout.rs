@@ -6,12 +6,13 @@
 
 use std::path::Path;
 use windows::core::{implement, Result, BOOL, HRESULT};
-use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC, E_NOTIMPL, HGLOBAL, POINT, S_OK};
+use windows::Win32::Foundation::{OLE_E_ADVISENOTSUPPORTED, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC, E_NOTIMPL, HGLOBAL, POINT, S_OK};
 use windows::Win32::System::Com::{IAdviseSink, IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, FORMATETC, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT};
 use windows::Win32::System::Ole::{DoDragDrop, IDropSource, IDropSource_Impl, OleInitialize, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK};
 use windows::Win32::System::SystemServices::{MODIFIERKEYS_FLAGS, MK_LBUTTON};
-use windows::Win32::UI::Shell::DROPFILES;
+use windows::Win32::UI::Shell::{SHCreateStdEnumFmtEtc, DROPFILES};
+use windows::Win32::System::Com::{DATADIR_GET, DVASPECT_CONTENT};
 
 const CF_HDROP: u16 = 15;
 
@@ -69,17 +70,21 @@ impl IDataObject_Impl for FileData_Impl {
     fn SetData(&self, _pformatetc: *const FORMATETC, _pmedium: *const STGMEDIUM, _frelease: BOOL) -> Result<()> {
         Err(E_NOTIMPL.into())
     }
-    fn EnumFormatEtc(&self, _dwdirection: u32) -> Result<IEnumFORMATETC> {
-        Err(E_NOTIMPL.into())
+    fn EnumFormatEtc(&self, dwdirection: u32) -> Result<IEnumFORMATETC> {
+        if dwdirection != DATADIR_GET.0 as u32 {
+            return Err(E_NOTIMPL.into());
+        }
+        let fmt = [FORMATETC { cfFormat: CF_HDROP, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }];
+        unsafe { SHCreateStdEnumFmtEtc(&fmt) }
     }
     fn DAdvise(&self, _pformatetc: *const FORMATETC, _advf: u32, _padvsink: windows::core::Ref<'_, IAdviseSink>) -> Result<u32> {
-        Err(E_NOTIMPL.into())
+        Err(OLE_E_ADVISENOTSUPPORTED.into())
     }
     fn DUnadvise(&self, _dwconnection: u32) -> Result<()> {
-        Err(E_NOTIMPL.into())
+        Err(OLE_E_ADVISENOTSUPPORTED.into())
     }
     fn EnumDAdvise(&self) -> Result<IEnumSTATDATA> {
-        Err(E_NOTIMPL.into())
+        Err(OLE_E_ADVISENOTSUPPORTED.into())
     }
 }
 
@@ -141,6 +146,7 @@ pub fn drag_file(path: &Path) -> bool {
         let source: IDropSource = Source.into();
         let mut effect = DROPEFFECT(0);
         let hr = DoDragDrop(&data, &source, DROPEFFECT_COPY | DROPEFFECT_LINK, &mut effect);
+        egui_baseview::keyhook::log(&format!("dragdrop hr=0x{:x} effect={} file={}", hr.0 as u32, effect.0, path.display()));
         hr == DRAGDROP_S_DROP && effect.0 != 0
     }
 }
