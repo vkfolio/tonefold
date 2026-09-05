@@ -6,6 +6,8 @@ use flvstx_core::ops::Store;
 use flvstx_core::{Note, Session, PPQ};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+#[allow(unused_imports)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 /// One scheduled MIDI event in song ticks.
@@ -98,14 +100,17 @@ pub struct Shared {
     /// Host info mirrored for the GUI.
     pub host_tempo_bits: AtomicU32,
     pub host_playing: AtomicBool,
-    /// Requests a seek to this tick (u32::MAX = none).
-    pub seek_tick: AtomicU32,
-    /// One-shot note preview from the piano roll: (channel<<16 | pitch<<8 | vel), 0 = none.
-    pub preview: AtomicU32,
+    /// Seek request: (epoch << 32) | tick. Every plugin instance tracks the last epoch it consumed,
+    /// so all instances sharing this state seek together.
+    pub seek: AtomicU64,
+    /// Note preview from the piano roll: (epoch << 32) | (channel<<16 | pitch<<8 | vel).
+    pub preview: AtomicU64,
     /// Session revision the playback buffer was built from.
     pub built_revision: AtomicU64,
-    /// Ask the audio thread to send all-notes-off.
-    pub panic: AtomicBool,
+    /// All-notes-off request epoch.
+    pub panic: AtomicU64,
+    /// Hash of the persisted JSON last loaded into this state (so several instances don't reload it).
+    pub loaded_hash: AtomicU64,
     pub chat: Mutex<Vec<ChatLine>>,
     pub agent_session_id: Mutex<Option<String>>,
     pub ui: Mutex<UiState>,
@@ -126,7 +131,27 @@ impl Default for UiState {
     }
 }
 
+/// Every FLVSTX instance in the same host process shares one song, so one instance per FL instrument
+/// (each with its own MIDI output channel) all show and play the same session.
+pub fn global_shared() -> Arc<Shared> {
+    static GLOBAL: std::sync::OnceLock<Arc<Shared>> = std::sync::OnceLock::new();
+    GLOBAL.get_or_init(|| Shared::new(Session::default())).clone()
+}
+
 impl Shared {
+    pub fn request_seek(&self, tick: u32) {
+        let epoch = (self.seek.load(Ordering::Relaxed) >> 32) + 1;
+        self.seek.store((epoch << 32) | tick as u64, Ordering::Release);
+    }
+    pub fn request_panic(&self) {
+        self.panic.fetch_add(1, Ordering::AcqRel);
+    }
+    pub fn request_preview(&self, channel: u8, pitch: u8, vel_midi: u8) {
+        let epoch = (self.preview.load(Ordering::Relaxed) >> 32) + 1;
+        let v = ((channel as u64) << 16) | ((pitch as u64) << 8) | vel_midi.max(1) as u64;
+        self.preview.store((epoch << 32) | v, Ordering::Release);
+    }
+
     pub fn new(session: Session) -> Arc<Shared> {
         let store = Arc::new(Mutex::new(Store::new(session)));
         let shared = Shared {
@@ -138,10 +163,11 @@ impl Shared {
             playhead_tick: AtomicU32::new(0),
             host_tempo_bits: AtomicU32::new(120f32.to_bits()),
             host_playing: AtomicBool::new(false),
-            seek_tick: AtomicU32::new(u32::MAX),
-            preview: AtomicU32::new(0),
+            seek: AtomicU64::new(0),
+            preview: AtomicU64::new(0),
             built_revision: AtomicU64::new(u64::MAX),
-            panic: AtomicBool::new(false),
+            panic: AtomicU64::new(0),
+            loaded_hash: AtomicU64::new(0),
             chat: Mutex::new(Vec::new()),
             agent_session_id: Mutex::new(None),
             ui: Mutex::new(UiState::default()),

@@ -805,7 +805,7 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             if playing {
                 shared.playing.store(false, Ordering::Relaxed);
             } else {
-                shared.seek_tick.store(shared.playback.load().loop_start, Ordering::Release);
+                shared.request_seek(shared.playback.load().loop_start);
                 shared.playing.store(true, Ordering::Relaxed);
             }
         }
@@ -813,7 +813,7 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         if ui.checkbox(&mut s, "Sync to host").on_hover_text("Follow FL Studio's transport and position").changed() {
             shared.sync_to_host.store(s, Ordering::Relaxed);
             shared.playing.store(false, Ordering::Relaxed);
-            shared.panic.store(true, Ordering::Relaxed);
+            shared.request_panic();
         }
         let mut loop_sec = ui_state.loop_section;
         if ui.checkbox(&mut loop_sec, "Loop section").on_hover_text("Loop only the selected section (else the whole song)").changed() {
@@ -826,7 +826,7 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         let bar = shared.lock_store().session.bar_ticks().max(1);
         ui.label(RichText::new(format!("{}.{}", ph / bar + 1, (ph % bar) / flvstx_core::PPQ + 1)).monospace());
         if ui.small_button("Panic").clicked() {
-            shared.panic.store(true, Ordering::Relaxed);
+            shared.request_panic();
         }
         ui.separator();
         if ui.button("Undo").clicked() {

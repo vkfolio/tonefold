@@ -26,6 +26,9 @@ pub struct Flvstx {
     sounding: Vec<(u8, u8)>,
     last_loaded_state: u64,
     preview_off_at: Option<(u32, u8, u8)>,
+    seen_seek_epoch: u64,
+    seen_panic_epoch: u64,
+    seen_preview_epoch: u64,
 }
 
 /// Which MIDI channel this instance sends. Every layer has its own channel (shown in the layer list),
@@ -69,7 +72,7 @@ impl Default for Flvstx {
                 output: EnumParam::new("MIDI output", OutputSelect::All),
                 state_json: Arc::new(RwLock::new(String::new())),
             }),
-            shared: Shared::new(flvstx_core::Session::default()),
+            shared: state::global_shared(),
             sample_rate: 44100.0,
             pos_ticks: 0.0,
             next_event: 0,
@@ -77,6 +80,9 @@ impl Default for Flvstx {
             sounding: Vec::with_capacity(64),
             last_loaded_state: 0,
             preview_off_at: None,
+            seen_seek_epoch: 0,
+            seen_panic_epoch: 0,
+            seen_preview_epoch: 0,
         }
     }
 }
@@ -120,12 +126,14 @@ impl Plugin for Flvstx {
         // Restore persisted state (project load). The GUI also does this, but the editor may not be open.
         let json = self.params.state_json.read().map(|s| s.clone()).unwrap_or_default();
         let h = hash_str(&json);
-        if !json.is_empty() && h != self.last_loaded_state {
+        // Several instances persist the same shared song; only the first to see a new blob loads it.
+        if !json.is_empty() && h != self.last_loaded_state && h != self.shared.loaded_hash.load(Ordering::Acquire) {
             if let Ok(p) = serde_json::from_str::<Persisted>(&json) {
                 self.shared.load_persisted(p);
+                self.shared.loaded_hash.store(h, Ordering::Release);
             }
-            self.last_loaded_state = h;
         }
+        self.last_loaded_state = h;
         true
     }
 
@@ -156,7 +164,10 @@ impl Plugin for Flvstx {
         let tps = state::ticks_per_sample(tempo, self.sample_rate);
 
         // Panic / stop: release sounding notes.
-        if shared.panic.swap(false, Ordering::AcqRel) || (!want_play && self.was_playing) {
+        let panic_epoch = shared.panic.load(Ordering::Acquire);
+        let panic_now = panic_epoch != self.seen_panic_epoch;
+        self.seen_panic_epoch = panic_epoch;
+        if panic_now || (!want_play && self.was_playing) {
             for &(ch, p) in &self.sounding {
                 context.send_event(NoteEvent::NoteOff { timing: 0, voice_id: None, channel: ch, note: p, velocity: 0.0 });
             }
@@ -164,8 +175,10 @@ impl Plugin for Flvstx {
         }
 
         // Seek request.
-        let seek = shared.seek_tick.swap(u32::MAX, Ordering::AcqRel);
-        if seek != u32::MAX {
+        let seek_packed = shared.seek.load(Ordering::Acquire);
+        if (seek_packed >> 32) != self.seen_seek_epoch {
+            self.seen_seek_epoch = seek_packed >> 32;
+            let seek = (seek_packed & 0xFFFF_FFFF) as u32;
             self.pos_ticks = seek as f64;
             self.next_event = buf.events.partition_point(|e| e.tick < seek);
         }
@@ -257,7 +270,9 @@ impl Plugin for Flvstx {
         self.was_playing = want_play;
 
         // Piano-roll note preview (short blip).
-        let preview = shared.preview.swap(0, Ordering::AcqRel);
+        let preview_packed = shared.preview.load(Ordering::Acquire);
+        let preview = if (preview_packed >> 32) != self.seen_preview_epoch { (preview_packed & 0xFFFF_FFFF) as u32 } else { 0 };
+        self.seen_preview_epoch = preview_packed >> 32;
         if preview != 0 {
             let ch = ((preview >> 16) & 0xF) as u8;
             let pitch = ((preview >> 8) & 0x7F) as u8;

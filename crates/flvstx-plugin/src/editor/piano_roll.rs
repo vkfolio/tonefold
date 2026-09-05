@@ -516,7 +516,7 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
 }
 
 fn preview(shared: &Shared, track: &str, pitch: u8, vel: f32) {
-    let v = ((vel.clamp(0.05, 1.0) * 127.0) as u32).max(1);
+    let v = ((vel.clamp(0.05, 1.0) * 127.0) as u8).max(1);
     let ch = shared.lock_store().session.track_by(track).map(|t| t.channel).unwrap_or(0);
-    shared.preview.store(((ch as u32) << 16) | ((pitch as u32) << 8) | v, Ordering::Release);
+    shared.request_preview(ch, pitch, v);
 }
