@@ -66,9 +66,9 @@ You should now have:
    - Drag from FLVSTX's **MIDI out** connector to FLEX's **MIDI in** connector, and from FLEX's audio out to the
      "To FL Studio" output block so you hear it.
    - Double-click the FLVSTX block to open its window. Everything below works the same inside Patcher.
-   - For several instruments, add them all in the same Patcher. Every instrument receives every layer unless
-     you add one FLVSTX block per instrument and set each block's **MIDI output** parameter to that layer's
-     channel (the Layers panel shows the channel under each layer's name).
+   - For several instruments, add them all in the same Patcher, with **one FLVSTX block per instrument**.
+     In each FLVSTX window use the **Send** dropdown in the top bar to pick the layer that instrument should
+     play (for example *Melody (ch 2)* for FLEX, *Drums (ch 10)* for FPC). All blocks show the same song.
 6. Text too small or too big? Top right of the FLVSTX window, the **A** menu picks the size. Drag the
    bottom-right corner of the piano roll area to make the window bigger.
 
