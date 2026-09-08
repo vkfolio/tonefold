@@ -178,6 +178,11 @@ impl TrackRole {
     }
 }
 
+/// MIDI's own default, and what a synth assumes when nothing declares otherwise.
+pub fn default_bend_range() -> u8 {
+    2
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     pub pitch: u8,
@@ -189,11 +194,24 @@ pub struct Note {
     pub vel: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lyric: Option<String>,
+    /// Glide into this note from `semitones` away over `ms` (an 808 slide, a guitar bend). Compiled
+    /// into the clip's pitch-bend lane, which is what playback and export actually read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slide: Option<Slide>,
+}
+
+/// A pitch glide into a note.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Slide {
+    /// Where the glide starts, relative to the note (negative = from below).
+    pub semitones: f32,
+    /// How long the glide takes.
+    pub ms: u32,
 }
 
 impl Note {
     pub fn new(pitch: u8, start: u32, len: u32, vel: f32) -> Self {
-        Note { pitch, start, len, vel, lyric: None }
+        Note { pitch, start, len, vel, lyric: None, slide: None }
     }
     pub fn end(&self) -> u32 {
         self.start + self.len
@@ -216,17 +234,153 @@ pub enum ClipSource {
     Imported,
 }
 
+/// What a controller lane drives. Expression and sustain are how a real player shapes a held
+/// sound; notes alone cannot say "swell here" or "hold the pedal through the change".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoTarget {
+    /// CC11 — loudness of a sounding note (a string or pad swell).
+    Expression,
+    /// CC64 — sustain pedal, on above 0.5.
+    Sustain,
+    /// Pitch bend, -1..1 across the track's bend range.
+    PitchBend,
+    /// CC1 — modulation / vibrato depth.
+    Modulation,
+}
+
+impl AutoTarget {
+    /// Controller number, or None for pitch bend (its own MIDI message).
+    pub fn cc(&self) -> Option<u8> {
+        match self {
+            AutoTarget::Expression => Some(11),
+            AutoTarget::Sustain => Some(64),
+            AutoTarget::Modulation => Some(1),
+            AutoTarget::PitchBend => None,
+        }
+    }
+    /// Value a lane rests at when nothing is written (also what a reset restores).
+    pub fn neutral(&self) -> f32 {
+        match self {
+            AutoTarget::Expression => 1.0,
+            AutoTarget::Sustain | AutoTarget::Modulation => 0.0,
+            AutoTarget::PitchBend => 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Curve {
+    /// Ramp to the next point.
+    Linear,
+    /// Hold until the next point (pedals, switches).
+    Step,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AutoPoint {
+    /// Ticks from the start of the section.
+    pub tick: u32,
+    /// 0..1, or -1..1 for pitch bend.
+    pub value: f32,
+    #[serde(default = "linear_curve")]
+    pub curve: Curve,
+}
+
+fn linear_curve() -> Curve {
+    Curve::Linear
+}
+
+/// One controller lane over a clip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Automation {
+    pub target: AutoTarget,
+    pub points: Vec<AutoPoint>,
+}
+
+impl Automation {
+    pub fn new(target: AutoTarget, points: Vec<AutoPoint>) -> Self {
+        let mut a = Automation { target, points };
+        a.points.sort_by_key(|p| p.tick);
+        a
+    }
+
+    /// Value at `tick`, interpolating between points.
+    pub fn value_at(&self, tick: u32) -> f32 {
+        if self.points.is_empty() {
+            return self.target.neutral();
+        }
+        match self.points.binary_search_by_key(&tick, |p| p.tick) {
+            Ok(i) => self.points[i].value,
+            Err(0) => self.points[0].value,
+            Err(i) if i >= self.points.len() => self.points[self.points.len() - 1].value,
+            Err(i) => {
+                let (a, b) = (self.points[i - 1], self.points[i]);
+                match a.curve {
+                    Curve::Step => a.value,
+                    Curve::Linear => {
+                        let span = (b.tick - a.tick).max(1) as f32;
+                        a.value + (b.value - a.value) * ((tick - a.tick) as f32 / span)
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn end(&self) -> u32 {
+        self.points.last().map(|p| p.tick).unwrap_or(0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
     pub notes: Vec<Note>,
     pub source: ClipSource,
+    /// Controller lanes (expression, sustain, bend) for this clip.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automation: Vec<Automation>,
 }
 
 impl Clip {
     pub fn new(notes: Vec<Note>, source: ClipSource) -> Self {
-        let mut c = Clip { notes, source };
+        let mut c = Clip { notes, source, automation: Vec::new() };
         c.sort();
+        c.compile();
         c
+    }
+
+    pub fn with_automation(notes: Vec<Note>, source: ClipSource, automation: Vec<Automation>) -> Self {
+        let mut c = Clip { notes, source, automation };
+        c.sort();
+        c.compile();
+        c
+    }
+
+    /// Expands per-note sugar (currently [`Slide`]) into the lanes, so everything downstream reads
+    /// exactly one representation of expression.
+    pub fn compile(&mut self) {
+        let slides: Vec<(u32, f32, u32)> = self.notes.iter().filter_map(|n| n.slide.map(|s| (n.start, s.semitones, s.ms))).collect();
+        if slides.is_empty() {
+            return;
+        }
+        let lane = match self.automation.iter().position(|a| a.target == AutoTarget::PitchBend) {
+            Some(i) => &mut self.automation[i],
+            None => {
+                self.automation.push(Automation::new(AutoTarget::PitchBend, Vec::new()));
+                self.automation.last_mut().unwrap()
+            }
+        };
+        // Ticks per ms is tempo-dependent; slides are short, so assume the common 120 BPM here and
+        // let the caller re-compile if it cares. PPQ/2 per beat at 120 BPM = 4 ticks per ms.
+        for (start, semis, ms) in slides {
+            let ticks = (ms * PPQ / 500).max(PPQ / 32);
+            let from = start.saturating_sub(ticks);
+            lane.points.push(AutoPoint { tick: from, value: (semis / 12.0).clamp(-1.0, 1.0), curve: Curve::Linear });
+            lane.points.push(AutoPoint { tick: start, value: 0.0, curve: Curve::Linear });
+        }
+        lane.points.sort_by_key(|p| p.tick);
+        lane.points.dedup_by_key(|p| p.tick);
     }
     pub fn sort(&mut self) {
         self.notes.sort_by(|a, b| a.start.cmp(&b.start).then(a.pitch.cmp(&b.pitch)));
@@ -398,11 +552,14 @@ pub struct Track {
     /// Groove template for this layer ("none" to play straight). None = the song's, else the style's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groove: Option<String>,
+    /// Pitch-bend range in semitones, declared to the synth and to exported MIDI. 808 slides want 12.
+    #[serde(default = "default_bend_range")]
+    pub bend_range: u8,
 }
 
 impl Track {
     pub fn new(id: impl Into<String>, name: impl Into<String>, kind: TrackRole, channel: u8) -> Self {
-        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new(), instrument: None, groove: None }
+        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new(), instrument: None, groove: None, bend_range: default_bend_range() }
     }
     pub fn active_in(&self, section_id: &str) -> bool {
         !self.inactive.contains(section_id)
@@ -597,6 +754,52 @@ impl Session {
 
     /// Flattens a layer into song-absolute notes (section clips offset by section start; inactive
     /// sections skipped).
+    /// Every controller lane of a layer laid out along the song, with a reset at each section
+    /// boundary so a pedal held at the end of a verse cannot smear into the chorus.
+    pub fn flatten_automation(&self, track: &str) -> Vec<(u32, AutoTarget, f32)> {
+        let bar = self.bar_ticks();
+        let mut out: Vec<(u32, AutoTarget, f32)> = Vec::new();
+        let Some(track) = self.track_by(track) else { return out };
+        let step = PPQ / 16;
+        let mut offset = 0;
+        let mut touched: Vec<AutoTarget> = Vec::new();
+        for s in &self.sections {
+            let len = s.bars * bar;
+            let clip = if track.active_in(&s.id) { track.clips.get(&s.id) } else { None };
+            for target in [AutoTarget::Expression, AutoTarget::Sustain, AutoTarget::PitchBend, AutoTarget::Modulation] {
+                let lane = clip.and_then(|c| c.automation.iter().find(|a| a.target == target));
+                match lane {
+                    Some(lane) if !lane.points.is_empty() => {
+                        if !touched.contains(&target) {
+                            touched.push(target);
+                        }
+                        let mut t = 0;
+                        let mut last = f32::NAN;
+                        while t < len {
+                            let v = lane.value_at(t);
+                            // Only emit where the lane actually moves; a flat lane costs one event.
+                            if !(v - last).abs().lt(&0.004) {
+                                out.push((offset + t, target, v));
+                                last = v;
+                            }
+                            t += step;
+                        }
+                        // Leave the lane where it belongs at the boundary.
+                        out.push((offset + len.saturating_sub(1), target, target.neutral()));
+                    }
+                    _ => {
+                        if touched.contains(&target) {
+                            out.push((offset, target, target.neutral()));
+                        }
+                    }
+                }
+            }
+            offset += len;
+        }
+        out.sort_by_key(|(t, _, _)| *t);
+        out
+    }
+
     pub fn flatten(&self, track: &str) -> Vec<Note> {
         let bar = self.bar_ticks();
         let mut out = Vec::new();

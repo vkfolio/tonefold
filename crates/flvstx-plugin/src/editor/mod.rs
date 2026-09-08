@@ -1026,7 +1026,12 @@ fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
     let dir = flvstx_core::midi::default_export_dir().join("drag");
     let _ = std::fs::create_dir_all(&dir);
     let file = dir.join(format!("{}{}.mid", t.id, if section_only { format!("-{}", section.clone().unwrap_or_default()) } else { String::new() }));
-    let track_data = flvstx_core::midi::MidiTrack { name: &t.name, channel: t.channel, notes: &notes };
+    let automation = if section_only {
+        section.as_deref().and_then(|s| session.clip(&t.id, s).map(|c| c.automation.iter().flat_map(|a| a.points.iter().map(|p| (p.tick, a.target, p.value)).collect::<Vec<_>>()).collect::<Vec<_>>())).unwrap_or_default()
+    } else {
+        session.flatten_automation(&t.id)
+    };
+    let track_data = flvstx_core::midi::MidiTrack { name: &t.name, channel: t.channel, notes: &notes, automation: &automation, bend_range: t.bend_range };
     if let Err(e) = flvstx_core::midi::write_smf(&file, session.tempo, (session.time_sig.num, session.time_sig.den), &[track_data]) {
         shared.push_chat(ChatRole::System, format!("could not write {}: {e}", file.display()));
         return;

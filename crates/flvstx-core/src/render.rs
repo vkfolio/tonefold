@@ -1,7 +1,7 @@
 //! Offline render of a session through a SoundFont, and a plain 16-bit WAV writer. Enabled by the
 //! `render` feature so the plugin, the CLI and tests all bounce audio the same way.
 
-use crate::playback::timeline;
+use crate::playback::{timeline, EventKind};
 use crate::{Session, PPQ};
 use std::io::Write;
 use std::path::Path;
@@ -31,6 +31,8 @@ pub fn render_stereo(
         if ch != 9 && *program < 128 {
             synth.process_midi_message(ch as i32, 0xC0, *program as i32, 0);
         }
+        // Declare the bend range, or a 12-semitone slide plays as 2.
+        set_bend_range(&mut synth, ch as i32, tl.bend_ranges[ch]);
     }
 
     // Ticks are laid out at the session tempo; the synth has no tempo of its own.
@@ -46,16 +48,29 @@ pub fn render_stereo(
             synth.render(&mut left[pos..at], &mut right[pos..at]);
             pos = at;
         }
-        if e.on {
-            synth.note_on(e.synth_channel as i32, e.pitch as i32, ((e.vel * 127.0) as i32).clamp(1, 127));
-        } else {
-            synth.note_off(e.synth_channel as i32, e.pitch as i32);
+        let ch = e.synth_channel as i32;
+        match e.kind {
+            EventKind::NoteOn { pitch, vel } => synth.note_on(ch, pitch as i32, ((vel * 127.0) as i32).clamp(1, 127)),
+            EventKind::NoteOff { pitch } => synth.note_off(ch, pitch as i32),
+            EventKind::Cc { cc, value } => synth.process_midi_message(ch, 0xB0, cc as i32, value as i32),
+            EventKind::Bend { value } => {
+                let v = (value as i32 + 8192).clamp(0, 16383);
+                synth.process_midi_message(ch, 0xE0, v & 0x7F, v >> 7);
+            }
         }
     }
     if pos < total {
         synth.render(&mut left[pos..], &mut right[pos..]);
     }
     Ok((left, right))
+}
+
+/// Declares a channel's pitch-bend range through RPN 0.
+pub fn set_bend_range(synth: &mut rustysynth::Synthesizer, channel: i32, semitones: u8) {
+    synth.process_midi_message(channel, 0xB0, 101, 0);
+    synth.process_midi_message(channel, 0xB0, 100, 0);
+    synth.process_midi_message(channel, 0xB0, 6, semitones as i32);
+    synth.process_midi_message(channel, 0xB0, 38, 0);
 }
 
 /// Where the installer puts the General MIDI soundfont (`FLVSTX_SOUNDFONT` overrides it).

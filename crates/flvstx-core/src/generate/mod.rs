@@ -6,6 +6,7 @@
 pub mod bass;
 pub mod chords;
 pub mod drums;
+pub mod expression;
 pub mod harmonize;
 pub mod kids;
 pub mod layers;
@@ -214,7 +215,14 @@ pub fn generate_track(session: &mut Session, track: &str, section_id: &str, para
         humanize(&mut notes, &hp, kind, session.tempo, session.bar_ticks());
     }
     clamp_to_section(&mut notes, section.bars * session.bar_ticks());
-    let clip = Clip::new(notes, ClipSource::Generated { seed: params.seed.unwrap_or(session.seed), params: serde_json::to_value(params).unwrap_or_default() });
+    let energy = ctx.effective_energy(params.energy(&section));
+    let lanes = expression::lanes_for(kind, &section, &notes, ctx, energy, session.bar_ticks());
+    let clip = Clip::with_automation(notes, ClipSource::Generated { seed: params.seed.unwrap_or(session.seed), params: serde_json::to_value(params).unwrap_or_default() }, lanes);
+    if clip.automation.iter().any(|a| a.target == crate::model::AutoTarget::PitchBend) {
+        if let Some(t) = session.track_by_mut(&track_id) {
+            t.bend_range = t.bend_range.max(12);
+        }
+    }
     if !session.track_by(&track_id).unwrap().locked {
         session.set_clip(&track_id, &section.id, clip.clone())?;
     }

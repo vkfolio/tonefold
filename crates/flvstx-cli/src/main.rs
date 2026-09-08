@@ -33,8 +33,13 @@ fn save(path: &str, s: &Session) -> Result<()> {
 }
 
 fn render(session: &Session, out: &PathBuf) -> Result<()> {
-    let all: Vec<(String, u8, Vec<flvstx_core::Note>)> = session.tracks.iter().map(|t| (t.id.clone(), t.channel, session.flatten(&t.id))).collect();
-    let tracks: Vec<MidiTrack> = all.iter().map(|(id, ch, n)| MidiTrack { name: id, channel: *ch, notes: n }).collect();
+    type TrackData = (String, u8, Vec<flvstx_core::Note>, Vec<(u32, flvstx_core::AutoTarget, f32)>, u8);
+    let all: Vec<TrackData> = session
+        .tracks
+        .iter()
+        .map(|t| (t.id.clone(), t.channel, session.flatten(&t.id), session.flatten_automation(&t.id), t.bend_range))
+        .collect();
+    let tracks: Vec<MidiTrack> = all.iter().map(|(id, ch, n, a, br)| MidiTrack { name: id, channel: *ch, notes: n, automation: a, bend_range: *br }).collect();
     write_smf(out, session.tempo, (session.time_sig.num, session.time_sig.den), &tracks)?;
     println!("wrote {}", out.display());
     Ok(())

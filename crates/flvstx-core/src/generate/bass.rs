@@ -2,7 +2,7 @@
 //! respected), with approach notes into chord changes and space where the melody is busy.
 
 use super::{bar_roll, clamp_to_section, GenParams, SongCtx};
-use crate::model::{Note, Section, SectionRole, Session, TrackRole, PPQ};
+use crate::model::{Note, Section, SectionRole, Session, Slide, TrackRole, PPQ};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -188,10 +188,23 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, c
             }
             Pattern::EightOhEight => {
                 // Long 808 on the downbeat, a syncopated hit later in the bar, occasional octave drop.
-                notes.push(Note::new(root, ev.start, q * 2 + e, base_vel + 0.05));
+                let mut head = Note::new(root, ev.start, q * 2 + e, base_vel + 0.05);
+                // Glide in from the previous chord's root: the defining 808 gesture.
+                if ci > 0 {
+                    let prev = root_in_register(section.chords[ci - 1].chord.bass_pc());
+                    let delta = prev as f32 - root as f32;
+                    if delta.abs() >= 1.0 && delta.abs() <= 12.0 {
+                        head.slide = Some(Slide { semitones: delta, ms: 70 });
+                    }
+                }
+                notes.push(head);
                 if ev.len >= q * 4 {
                     let t = ev.start + q * 2 + e + if rng.random_bool(0.5) { 0 } else { q / 4 };
-                    notes.push(Note::new(root, t, q - q / 4, base_vel - 0.05));
+                    let mut hit = Note::new(root, t, q - q / 4, base_vel - 0.05);
+                    if rng.random_bool(0.6) {
+                        hit.slide = Some(Slide { semitones: -5.0, ms: 60 });
+                    }
+                    notes.push(hit);
                     if energy > 0.6 && rng.random_bool(0.5) {
                         notes.push(Note::new(root.saturating_sub(12).max(24), ev.start + q * 3 + e, e, base_vel));
                     }

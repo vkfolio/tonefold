@@ -21,12 +21,14 @@ pub struct PlaybackBuffer {
     pub tempo: f32,
     /// General MIDI program per synth channel (128 = drums) at build time.
     pub programs: [u8; 16],
+    /// Pitch-bend range in semitones per synth channel.
+    pub bend_ranges: [u8; 16],
 }
 
 impl PlaybackBuffer {
     pub fn build(session: &Session, loop_section: Option<&str>, muted: &[String]) -> PlaybackBuffer {
         let tl = flvstx_core::playback::timeline(session, loop_section, muted);
-        PlaybackBuffer { events: tl.events, loop_start: tl.loop_start, loop_end: tl.loop_end, tempo: tl.tempo, programs: tl.programs }
+        PlaybackBuffer { events: tl.events, loop_start: tl.loop_start, loop_end: tl.loop_end, tempo: tl.tempo, programs: tl.programs, bend_ranges: tl.bend_ranges }
     }
 }
 

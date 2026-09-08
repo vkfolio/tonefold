@@ -10,6 +10,7 @@ pub mod editor;
 pub mod state;
 pub mod wav;
 
+use flvstx_core::playback::EventKind;
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 use state::{Persisted, Shared};
@@ -35,7 +36,8 @@ pub struct Flvstx {
     /// Built-in soundfont synth (only the audio-owner instance renders it).
     synth: Option<rustysynth::Synthesizer>,
     synth_programs: [u8; 16],
-    synth_events: Vec<(u32, bool, u8, u8, u8)>,
+    /// Queue for the built-in synth: (sample offset, what, synth channel, data1, data2).
+    synth_events: Vec<(u32, SynthEvent, u8, u8, u8)>,
     synth_l: Vec<f32>,
     synth_r: Vec<f32>,
     instance_id: u64,
@@ -107,7 +109,7 @@ impl Default for Flvstx {
             seen_preview_epoch: 0,
             synth: None,
             synth_programs: [255; 16],
-            synth_events: Vec::with_capacity(1024),
+            synth_events: Vec::with_capacity(4096),
             synth_l: Vec::new(),
             synth_r: Vec::new(),
             instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
@@ -135,7 +137,7 @@ impl Plugin for Flvstx {
         ..AudioIOLayout::const_default()
     }];
     const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
-    const MIDI_OUTPUT: MidiConfig = MidiConfig::Basic;
+    const MIDI_OUTPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
@@ -212,8 +214,18 @@ impl Plugin for Flvstx {
                 context.send_event(NoteEvent::NoteOff { timing: 0, voice_id: None, channel: ch, note: p, velocity: 0.0 });
             }
             self.sounding.clear();
+            for ch in 0..16u8 {
+                context.send_event(NoteEvent::MidiCC { timing: 0, channel: ch, cc: 64, value: 0.0 });
+                context.send_event(NoteEvent::MidiCC { timing: 0, channel: ch, cc: 11, value: 1.0 });
+                context.send_event(NoteEvent::MidiPitchBend { timing: 0, channel: ch, value: 0.5 });
+            }
             if let Some(s) = self.synth.as_mut() {
                 s.note_off_all(false);
+                for ch in 0..16 {
+                    s.process_midi_message(ch, 0xB0, 64, 0);
+                    s.process_midi_message(ch, 0xB0, 11, 127);
+                    s.process_midi_message(ch, 0xE0, 0, 64);
+                }
             }
         }
 
@@ -257,23 +269,44 @@ impl Plugin for Flvstx {
                 match ev {
                     Some(e) if (e.tick as f64) < end && e.tick >= buf.loop_start && e.tick < buf.loop_end => {
                         let timing = (((e.tick as f64 - start) / tps).floor().max(0.0) as u32).min(n.saturating_sub(1));
-                        if e.on {
-                            if output_allows(output, e.channel) {
-                                context.send_event(NoteEvent::NoteOn { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: e.vel });
-                                if self.sounding.len() < 64 {
-                                    self.sounding.push((e.channel, e.pitch));
+                        let allowed = output_allows(output, e.channel);
+                        match e.kind {
+                            EventKind::NoteOn { pitch, vel } => {
+                                if allowed {
+                                    context.send_event(NoteEvent::NoteOn { timing, voice_id: None, channel: e.channel, note: pitch, velocity: vel });
+                                    if self.sounding.len() < 64 {
+                                        self.sounding.push((e.channel, pitch));
+                                    }
+                                }
+                                if self.synth_events.len() < self.synth_events.capacity() {
+                                    self.synth_events.push((timing, SynthEvent::NoteOn, e.synth_channel, pitch, (vel * 127.0) as u8));
                                 }
                             }
-                            if self.synth_events.len() < self.synth_events.capacity() {
-                                self.synth_events.push((timing, true, e.synth_channel, e.pitch, (e.vel * 127.0) as u8));
+                            EventKind::NoteOff { pitch } => {
+                                context.send_event(NoteEvent::NoteOff { timing, voice_id: None, channel: e.channel, note: pitch, velocity: 0.0 });
+                                if let Some(i) = self.sounding.iter().position(|&(c, p)| c == e.channel && p == pitch) {
+                                    self.sounding.swap_remove(i);
+                                }
+                                if self.synth_events.len() < self.synth_events.capacity() {
+                                    self.synth_events.push((timing, SynthEvent::NoteOff, e.synth_channel, pitch, 0));
+                                }
                             }
-                        } else {
-                            context.send_event(NoteEvent::NoteOff { timing, voice_id: None, channel: e.channel, note: e.pitch, velocity: 0.0 });
-                            if let Some(i) = self.sounding.iter().position(|&(c, p)| c == e.channel && p == e.pitch) {
-                                self.sounding.swap_remove(i);
+                            EventKind::Cc { cc, value } => {
+                                if allowed {
+                                    context.send_event(NoteEvent::MidiCC { timing, channel: e.channel, cc, value: value as f32 / 127.0 });
+                                }
+                                if self.synth_events.len() < self.synth_events.capacity() {
+                                    self.synth_events.push((timing, SynthEvent::Cc, e.synth_channel, cc, value));
+                                }
                             }
-                            if self.synth_events.len() < self.synth_events.capacity() {
-                                self.synth_events.push((timing, false, e.synth_channel, e.pitch, 0));
+                            EventKind::Bend { value } => {
+                                if allowed {
+                                    context.send_event(NoteEvent::MidiPitchBend { timing, channel: e.channel, value: (value as f32 + 8192.0) / 16383.0 });
+                                }
+                                if self.synth_events.len() < self.synth_events.capacity() {
+                                    let v = (value as i32 + 8192).clamp(0, 16383);
+                                    self.synth_events.push((timing, SynthEvent::Bend, e.synth_channel, (v & 0x7F) as u8, (v >> 7) as u8));
+                                }
                             }
                         }
                         self.next_event += 1;
@@ -334,13 +367,13 @@ impl Plugin for Flvstx {
             }
             self.preview_off_at = Some(((self.sample_rate * 0.25) as u32, ch, pitch));
             let sch = if ch == 9 { 9 } else { ch };
-            self.synth_events.push((0, true, sch, pitch, (vel * 127.0) as u8));
+            self.synth_events.push((0, SynthEvent::NoteOn, sch, pitch, (vel * 127.0) as u8));
         }
         if let Some((remaining, ch, p)) = self.preview_off_at {
             if remaining <= n {
                 context.send_event(NoteEvent::NoteOff { timing: remaining.saturating_sub(1).min(n - 1), voice_id: None, channel: ch, note: p, velocity: 0.0 });
                 self.preview_off_at = None;
-                self.synth_events.push((remaining.saturating_sub(1).min(n - 1), false, if ch == 9 { 9 } else { ch }, p, 0));
+                self.synth_events.push((remaining.saturating_sub(1).min(n - 1), SynthEvent::NoteOff, if ch == 9 { 9 } else { ch }, p, 0));
             } else {
                 self.preview_off_at = Some((remaining - n, ch, p));
             }
@@ -349,9 +382,18 @@ impl Plugin for Flvstx {
         for ch in buffer.as_slice() {
             ch.fill(0.0);
         }
-        self.render_synth(buffer, &buf.programs, n as usize);
+        self.render_synth(buffer, &buf.programs, &buf.bend_ranges, n as usize);
         ProcessStatus::Normal
     }
+}
+
+/// What a queued synth event does. Kept tiny and `Copy`: the audio thread must not allocate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SynthEvent {
+    NoteOn,
+    NoteOff,
+    Cc,
+    Bend,
 }
 
 impl Flvstx {
@@ -375,7 +417,7 @@ impl Flvstx {
         }
     }
 
-    fn render_synth(&mut self, buffer: &mut Buffer, programs: &[u8; 16], n: usize) {
+    fn render_synth(&mut self, buffer: &mut Buffer, programs: &[u8; 16], bend_ranges: &[u8; 16], n: usize) {
         let enabled = self.params.sound.value();
         let owner = self.shared.audio_owner.load(Ordering::Acquire);
         if owner == 0 {
@@ -400,6 +442,8 @@ impl Flvstx {
                 if ch != 9 && want < 128 {
                     synth.process_midi_message(ch as i32, 0xC0, want as i32, 0);
                 }
+                // Declare the bend range with the patch, or a 12-semitone slide plays as 2.
+                flvstx_core::render::set_bend_range(synth, ch as i32, bend_ranges[ch]);
             }
         }
         // Render in segments between events for sample-accurate timing.
@@ -420,10 +464,11 @@ impl Flvstx {
                 if (e.0 as usize).min(n) > pos {
                     break;
                 }
-                if e.1 {
-                    synth.note_on(e.2 as i32, e.3 as i32, e.4.max(1) as i32);
-                } else {
-                    synth.note_off(e.2 as i32, e.3 as i32);
+                match e.1 {
+                    SynthEvent::NoteOn => synth.note_on(e.2 as i32, e.3 as i32, e.4.max(1) as i32),
+                    SynthEvent::NoteOff => synth.note_off(e.2 as i32, e.3 as i32),
+                    SynthEvent::Cc => synth.process_midi_message(e.2 as i32, 0xB0, e.3 as i32, e.4 as i32),
+                    SynthEvent::Bend => synth.process_midi_message(e.2 as i32, 0xE0, e.3 as i32, e.4 as i32),
                 }
                 idx += 1;
             }
