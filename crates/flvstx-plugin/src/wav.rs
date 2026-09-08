@@ -10,9 +10,18 @@ use std::path::Path;
 const TAIL_SECONDS: f32 = 2.0;
 const SAMPLE_RATE: i32 = 44_100;
 
-/// Renders `section` (or the whole song) and writes it to `path`.
-/// Returns the length in seconds and the peak level before any limiting.
-pub fn render_to_file(shared: &Shared, section: Option<&str>, path: &Path) -> Result<(f32, f32), String> {
+/// What a render produced: the mix file first, then one file per layer.
+pub struct Render {
+    pub files: Vec<std::path::PathBuf>,
+    pub seconds: f32,
+    /// Peak of the mix before it was turned down (above 1.0 means it was).
+    pub peak: f32,
+}
+
+/// Renders `section` (or the whole song) into `dir`: the mix as `<name>.wav`, plus one
+/// `<name>-<layer>.wav` per layer that has notes. Every layer is rendered at the mix's gain, so the
+/// stems add back up to the mix.
+pub fn render_to_dir(shared: &Shared, section: Option<&str>, dir: &Path) -> Result<Render, String> {
     let (session, muted) = {
         let g = shared.lock_store();
         let ui = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
@@ -24,15 +33,46 @@ pub fn render_to_file(shared: &Shared, section: Option<&str>, path: &Path) -> Re
         .map_err(|_| "soundfont unavailable".to_string())?
         .clone()
         .ok_or_else(|| "no soundfont loaded yet — see the status next to the volume slider".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+
+    let base = section
+        .and_then(|id| session.section(id).map(|s| sanitize(&s.name)))
+        .unwrap_or_else(|| "song".to_string());
 
     let (left, right) = render(&session, section, &muted, &soundfont)?;
-
     // Keep the render honest: scale down rather than clip if the mix went over.
     let peak = left.iter().chain(right.iter()).fold(0.0f32, |m, s| m.max(s.abs()));
     let gain = if peak > 0.99 { 0.99 / peak } else { 1.0 };
+    let seconds = left.len() as f32 / SAMPLE_RATE as f32;
 
-    write_wav(path, &left, &right, gain)?;
-    Ok((left.len() as f32 / SAMPLE_RATE as f32, peak))
+    let mix = dir.join(format!("{base}.wav"));
+    write_wav(&mix, &left, &right, gain)?;
+    let mut files = vec![mix];
+
+    // One stem per layer: render with every other layer muted.
+    for track in &session.tracks {
+        if track.muted || muted.contains(&track.id) {
+            continue;
+        }
+        let others: Vec<String> = session.tracks.iter().filter(|t| t.id != track.id).map(|t| t.id.clone()).collect();
+        let Ok((l, r)) = render(&session, section, &others, &soundfont) else {
+            continue; // no notes for this layer in this range
+        };
+        let path = dir.join(format!("{base}-{}.wav", sanitize(&track.id)));
+        write_wav(&path, &l, &r, gain)?;
+        files.push(path);
+    }
+    Ok(Render { files, seconds, peak })
+}
+
+/// File-name safe version of a section or layer name.
+fn sanitize(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() { "layer".into() } else { s }
 }
 
 /// Renders the selection to interleaved-free stereo buffers.
@@ -146,5 +186,42 @@ mod tests {
         assert_eq!(&bytes[8..12], b"WAVE");
         assert_eq!(bytes.len(), 44 + left.len() * 4);
         let _ = std::fs::remove_file(&out);
+    }
+
+    /// A mix plus one stem per layer that has notes, all the same length.
+    #[test]
+    fn writes_mix_and_stems() {
+        let path = crate::state::soundfont_path();
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            eprintln!("skipping: no soundfont at {}", path.display());
+            return;
+        };
+        let sf = std::sync::Arc::new(rustysynth::SoundFont::new(&mut file).expect("soundfont"));
+
+        let mut session = Session::default();
+        session.sections.push(flvstx_core::Section::new("verse", "Verse", 1, 0.5));
+        let section = session.sections[0].id.clone();
+        // Two layers with notes, the rest empty: only those two should get a stem.
+        for (idx, pitch) in [(0usize, 48u8), (1usize, 72u8)] {
+            let id = session.tracks[idx].id.clone();
+            let notes = vec![Note::new(pitch, 0, PPQ * 2, 0.9)];
+            session.track_by_mut(&id).unwrap().clips.insert(section.clone(), Clip::new(notes, flvstx_core::ClipSource::Edited));
+        }
+
+        let shared = crate::state::Shared::new(session);
+        *shared.soundfont.lock().unwrap() = Some(sf);
+
+        let dir = std::env::temp_dir().join("flvstx-stems-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let r = render_to_dir(&shared, Some(&section), &dir).expect("render");
+
+        assert_eq!(r.files.len(), 3, "expected a mix and two stems, got {:?}", r.files);
+        assert!(r.files[0].file_name().unwrap().to_str().unwrap().starts_with("Verse."));
+        let mix_len = std::fs::metadata(&r.files[0]).unwrap().len();
+        for stem in &r.files[1..] {
+            let len = std::fs::metadata(stem).unwrap().len();
+            assert_eq!(len, mix_len, "{} is a different length to the mix", stem.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

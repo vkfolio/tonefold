@@ -148,7 +148,7 @@ handle. Drag the handle and drop it:
 The handle turns into a **✓** once written. A drag writes the whole song for that layer; hold **Shift**
 while dragging to write only the selected section.
 
-**Way 2, export + script.** Press **Export song…** (bottom bar) and pick a folder. It writes
+**Way 2, export + script.** Press **Export… > MIDI · whole song** (bottom bar) and pick a folder. It writes
 `latest.mid` (all layers) and one `.mid` per layer there, and refreshes the same files in
 `%LOCALAPPDATA%\FLVSTX\export\` so the import script always sees the latest take. In the target
 channel's piano roll choose **Tools > Scripts > FLVSTX Import**, pick the layer, press Accept. Or drag
@@ -173,8 +173,8 @@ Once imported, the notes are ordinary FL notes on your instruments; untick **Bui
 | Change a section's character | role dropdown + energy slider in the section row |
 | Fill everything | *Generate section* or *Generate song* |
 | Undo anything | *Undo* in the bottom bar |
-| Get notes into FL | *Export section…/song…* (pick a folder) then piano roll *Tools > Scripts > FLVSTX Import* |
-| Send someone the song | *Export WAV…* — renders the built-in sounds to a `.wav` |
+| Get notes into FL | *Export… > MIDI* (pick a folder) then piano roll *Tools > Scripts > FLVSTX Import* |
+| Send someone the song | *Export… > Audio* — a `.wav` mix plus one `.wav` per layer |
 | Hear the song inside FLVSTX | *Play* (loops the section, or the song with *Loop section* off) |
 | Follow FL's transport | tick *Sync to host* |
 

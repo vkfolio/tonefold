@@ -1055,44 +1055,43 @@ fn ask_export_dir(section: Option<String>) {
     });
 }
 
-/// Asks for a .wav destination, then renders the built-in sounds into it. Both run on a worker
-/// thread: the dialog must not re-enter the GUI, and a long song takes a moment to render.
+/// Asks for a folder, then renders the mix and one .wav per layer into it. Both run on a worker
+/// thread: the dialog must not re-enter the GUI, and a song with several layers takes a moment.
 fn ask_export_wav(section: Option<String>) {
     if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
         dbg_log("export: dialog already open");
         return;
     }
     let start = last_export_dir();
-    let name = format!("{}.wav", section.clone().unwrap_or_else(|| "song".into()));
     dbg_log(&format!("export: opening wav dialog at {}", start.display()));
     #[cfg(windows)]
     let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
     std::thread::spawn(move || {
         let _ = std::fs::create_dir_all(&start);
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Export audio")
-            .set_directory(&start)
-            .set_file_name(&name)
-            .add_filter("WAV audio", &["wav"]);
+            .set_title("Export audio to folder (mix + one .wav per layer)")
+            .set_directory(&start);
         #[cfg(windows)]
         if let Some(parent) = &parent {
             dialog = dialog.set_parent(parent);
         }
-        let picked = dialog.save_file();
+        let picked = dialog.pick_folder();
         dbg_log(&format!("export: wav dialog returned {:?}", picked));
         EXPORT_PICKING.store(false, Ordering::Release);
-        let Some(file) = picked else { return };
+        let Some(dir) = picked else { return };
         let shared = crate::state::global_shared();
-        shared.push_chat(ChatRole::System, format!("rendering {}…", file.display()));
-        match crate::wav::render_to_file(&shared, section.as_deref(), &file) {
-            Ok((seconds, peak)) => {
-                if let Some(dir) = file.parent() {
-                    if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
-                        *d = Some(dir.to_path_buf());
-                    }
+        shared.push_chat(ChatRole::System, format!("rendering audio to {}…", dir.display()));
+        match crate::wav::render_to_dir(&shared, section.as_deref(), &dir) {
+            Ok(r) => {
+                if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
+                    *d = Some(dir.clone());
                 }
-                let limited = if peak > 0.99 { format!(", turned down {:.1} dB to fit", 20.0 * (0.99 / peak).log10()) } else { String::new() };
-                shared.push_chat(ChatRole::System, format!("wrote {} ({seconds:.1}s{limited})", file.display()));
+                let limited = if r.peak > 0.99 { format!(", turned down {:.1} dB to fit", 20.0 * (0.99 / r.peak).log10()) } else { String::new() };
+                let names: Vec<&str> = r.files.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect();
+                shared.push_chat(
+                    ChatRole::System,
+                    format!("wrote {} files to {} ({:.1}s each{limited}): {}", r.files.len(), dir.display(), r.seconds, names.join(", ")),
+                );
             }
             Err(e) => shared.push_chat(ChatRole::System, format!("render failed: {e}")),
         }
@@ -1179,21 +1178,35 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         }
         ui.separator();
         let sec = ui_state.selected_section.clone();
-        let sec_wav = sec.clone();
-        if ui.button("Export section…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for this section").clicked() {
-            ask_export_dir(sec);
-        }
-        if ui.button("Export song…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for the whole song").clicked() {
-            ask_export_dir(None);
-        }
-        if ui.button("Export WAV…").on_hover_text("Renders the built-in sounds to a stereo .wav file (selected section, or the whole song if none is selected)").clicked() {
-            ask_export_wav(sec_wav);
-        }
-        if ui.button("Open folder").on_hover_text("Opens the folder of the last export").clicked() {
-            let dir = last_export_dir();
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
-        }
+        ui.menu_button("Export…", |ui| {
+            ui.label(RichText::new("MIDI — for FL Studio").small().weak());
+            if ui.button("Whole song…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer").clicked() {
+                ask_export_dir(None);
+                ui.close_menu();
+            }
+            let section_label = sec.clone().unwrap_or_else(|| "section".into());
+            if ui.add_enabled(sec.is_some(), egui::Button::new(format!("This section ({section_label})…"))).clicked() {
+                ask_export_dir(sec.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.label(RichText::new("Audio — built-in sounds").small().weak());
+            if ui.button("Whole song + one .wav per layer…").on_hover_text("Renders a stereo mix plus a stem for every layer into the folder you pick").clicked() {
+                ask_export_wav(None);
+                ui.close_menu();
+            }
+            if ui.add_enabled(sec.is_some(), egui::Button::new(format!("This section ({section_label}) + layers…"))).clicked() {
+                ask_export_wav(sec.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Open last export folder").clicked() {
+                let dir = last_export_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                ui.close_menu();
+            }
+        });
     });
     ui.horizontal(|ui| {
         let sec = ui_state.selected_section.clone();
