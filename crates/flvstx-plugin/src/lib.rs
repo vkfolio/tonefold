@@ -151,8 +151,8 @@ impl Plugin for Flvstx {
     fn initialize(&mut self, _layout: &AudioIOLayout, buffer_config: &BufferConfig, _context: &mut impl InitContext<Self>) -> bool {
         self.sample_rate = buffer_config.sample_rate;
         let max = buffer_config.max_buffer_size as usize;
-        self.synth_l = vec![0.0; max.max(64)];
-        self.synth_r = vec![0.0; max.max(64)];
+        self.synth_l = vec![0.0; max.max(16384)];
+        self.synth_r = vec![0.0; max.max(16384)];
         self.shared.load_soundfont_async();
         let _ = self.shared.audio_owner.compare_exchange(0, self.instance_id, Ordering::AcqRel, Ordering::Acquire);
         self.synth = None;

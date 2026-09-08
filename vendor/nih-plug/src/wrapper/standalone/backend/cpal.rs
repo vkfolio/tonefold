@@ -755,8 +755,35 @@ impl CpalMidir {
 
         // Can't borrow from `self` in the callback
         let config = self.config.clone();
+        let audio_io_layout = self.audio_io_layout;
+        // Shared-mode APIs (WASAPI in particular) ignore the requested period and call us with the
+        // device's own period, which may be larger. Grow the scratch buffers instead of panicking.
+        let mut buffer_size = buffer_size;
         let mut num_processed_samples = 0usize;
         move |data, _info| {
+            let actual_sample_count = if num_output_channels > 0 {
+                data.len() / num_output_channels
+            } else {
+                0
+            };
+            if actual_sample_count > buffer_size {
+                nih_warn!(
+                    "The audio device asked for {} samples per period instead of {}, growing the buffers",
+                    actual_sample_count,
+                    buffer_size
+                );
+                buffer_size = actual_sample_count;
+                for channel in main_io_storage.iter_mut() {
+                    channel.resize(buffer_size, 0.0);
+                }
+                for storage in aux_input_storage.iter_mut().chain(aux_output_storage.iter_mut()) {
+                    for channel in storage.iter_mut() {
+                        channel.resize(buffer_size, 0.0);
+                    }
+                }
+                buffer_manager = BufferManager::for_audio_io_layout(buffer_size, audio_io_layout);
+            }
+
             let mut transport = Transport::new(config.sample_rate);
             transport.pos_samples = Some(num_processed_samples as i64);
             transport.tempo = Some(config.tempo as f64);
@@ -796,7 +823,7 @@ impl CpalMidir {
             // again on each invocation
             main_io_channel_pointers.get().clear();
             for channel in main_io_storage.iter_mut() {
-                assert!(channel.len() == buffer_size);
+                assert!(channel.len() >= actual_sample_count);
 
                 main_io_channel_pointers.get().push(channel.as_mut_ptr());
             }
@@ -807,7 +834,7 @@ impl CpalMidir {
             {
                 input_channel_pointers.get().clear();
                 for channel in input_storage.iter_mut() {
-                    assert!(channel.len() == buffer_size);
+                    assert!(channel.len() >= actual_sample_count);
 
                     input_channel_pointers.get().push(channel.as_mut_ptr());
                 }
@@ -819,21 +846,13 @@ impl CpalMidir {
             {
                 output_channel_pointers.get().clear();
                 for channel in output_storage.iter_mut() {
-                    assert!(channel.len() == buffer_size);
+                    assert!(channel.len() >= actual_sample_count);
 
                     output_channel_pointers.get().push(channel.as_mut_ptr());
                 }
             }
 
             {
-                // Even though we told CPAL that we wanted `buffer_size` samples, it may still give
-                // us fewer. If we receive more than what we configured, then this will panic.
-                let actual_sample_count = data.len() / num_output_channels;
-                assert!(
-                    actual_sample_count <= buffer_size,
-                    "Received {actual_sample_count} samples, while the configured buffer size is \
-                     {buffer_size}"
-                );
                 let buffers = unsafe {
                     buffer_manager.create_buffers(0, actual_sample_count, |buffer_sources| {
                         *buffer_sources.main_output_channel_pointers = Some(ChannelPointers {
@@ -921,7 +940,7 @@ impl CpalMidir {
                 }
             }
 
-            num_processed_samples += buffer_size;
+            num_processed_samples += actual_sample_count;
         }
     }
 }

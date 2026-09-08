@@ -58,17 +58,18 @@ puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
    set **MIDI > Output port** to e.g. 10, and on the target instrument (FLEX, FPC, …) set
    **MIDI > Input port** to 10. Every layer goes out on its own MIDI channel (shown in the Layers
    panel); the plugin's **MIDI output** parameter selects one channel per instance, so add one FLVSTX
-   instance per instrument and pick that layer's channel on each. Instances do not share a session yet: generate in one, **Export song**, and import the .mid
-   files into the others' target channels if you want separate instruments.
+   instance per instrument and pick that layer's channel on each. All instances in the project share one session, so each can send a different layer.
 4. Edit notes in the piano roll: double-click adds, drag moves, drag the right edge resizes,
    right-click or Delete removes, ↑/↓ transposes (Shift = octave), Ctrl+A selects all, Ctrl+D
    duplicates, drag in the velocity lane sets velocity, Ctrl+wheel zooms. The composer sees your
    edits on its next turn.
-5. Commit to FL: **Export section** / **Export song** writes `%LOCALAPPDATA%\FLVSTX\export\latest.json`,
-   `latest.mid` and one `.mid` per track. Then either
+5. Commit to FL: **Export section…** / **Export song…** asks for a folder, then writes `latest.json`,
+   `latest.mid` (all tracks) and one `.mid` per track into it. The same files are refreshed in
+   `%LOCALAPPDATA%\FLVSTX\export\` too, which is where the import script reads them. Then either
    - open the target channel's piano roll and run **Tools > Scripts > FLVSTX Import** (choose the
      track; it merges into the existing notes at the timeline selection), or
-   - drag a `.mid` file from the export folder (**Open folder** button) onto a Channel Rack slot.
+   - drag a `.mid` file from the export folder (**Open folder** reopens the last one) onto a Channel Rack slot,
+   - or drag a layer's **⇗** handle in the Layers panel straight onto an FL channel or its piano roll.
 
 The session, chat history and composer session id are saved inside the FL project.
 

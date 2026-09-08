@@ -474,6 +474,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             st.poll_agent(&shared);
             st.sync_state(&shared);
             poll_drag_result(&shared);
+            poll_export(&shared);
             draw(ctx, st, &shared);
             ctx.request_repaint_after(std::time::Duration::from_millis(if st.turn_active || shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed) { 33 } else { 120 }));
         },
@@ -981,6 +982,108 @@ fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
     }
 }
 
+/// Folder chosen in the export dialog, waiting for the GUI thread to run the export.
+static EXPORT_PICK: Mutex<Option<(std::path::PathBuf, Option<String>)>> = Mutex::new(None);
+/// A folder dialog is already open (it runs on its own thread so it cannot block the GUI).
+static EXPORT_PICKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Folder of the last export; the dialog opens there and "Open folder" points at it.
+static LAST_EXPORT_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// The plugin window, so the export dialog can be owned by it.
+#[cfg(windows)]
+struct ParentWindow(std::num::NonZeroIsize);
+
+#[cfg(windows)]
+impl raw_window_handle::HasWindowHandle for ParentWindow {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let handle = raw_window_handle::Win32WindowHandle::new(self.0);
+        // SAFETY: the plugin window outlives the dialog; the editor tears the hook down on close.
+        unsafe { Ok(raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::Win32(handle))) }
+    }
+}
+
+#[cfg(windows)]
+impl raw_window_handle::HasDisplayHandle for ParentWindow {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let handle = raw_window_handle::WindowsDisplayHandle::new();
+        // SAFETY: the Windows display handle carries no data.
+        unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw_window_handle::RawDisplayHandle::Windows(handle))) }
+    }
+}
+
+/// Diagnostics to %LOCALAPPDATA%/FLVSTX/keys.log (shared with the keyboard hook).
+fn dbg_log(msg: &str) {
+    #[cfg(windows)]
+    egui_baseview::keyhook::log(msg);
+    #[cfg(not(windows))]
+    let _ = msg;
+}
+
+fn last_export_dir() -> std::path::PathBuf {
+    LAST_EXPORT_DIR.lock().ok().and_then(|d| d.clone()).unwrap_or_else(flvstx_core::midi::default_export_dir)
+}
+
+/// Asks for a destination folder on a worker thread (a modal dialog on the GUI thread would re-enter
+/// the window handler). [`poll_export`] runs the export once a folder comes back.
+fn ask_export_dir(section: Option<String>) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("export: dialog already open");
+        return;
+    }
+    let start = last_export_dir();
+    dbg_log(&format!("export: opening folder dialog at {}", start.display()));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(if section.is_some() { "Export section to folder" } else { "Export song to folder" })
+            .set_directory(&start);
+        // Own the dialog by the plugin window, or it can open behind an always-on-top plugin window.
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = dialog.pick_folder();
+        dbg_log(&format!("export: dialog returned {:?}", picked));
+        if let Some(dir) = picked {
+            if let Ok(mut p) = EXPORT_PICK.lock() {
+                *p = Some((dir, section));
+            }
+        }
+        EXPORT_PICKING.store(false, Ordering::Release);
+    });
+}
+
+/// Runs a pending export once the dialog thread has produced a folder.
+fn poll_export(shared: &Shared) {
+    let Some((dir, section)) = EXPORT_PICK.lock().ok().and_then(|mut p| p.take()) else { return };
+    let params = |d: &std::path::Path| match &section {
+        Some(s) => serde_json::json!({ "dir": d.display().to_string(), "section": s }),
+        None => serde_json::json!({ "dir": d.display().to_string() }),
+    };
+    let res = {
+        let mut g = shared.lock_store();
+        dispatch(&mut g, "export", &params(&dir))
+    };
+    match res {
+        Ok(v) => {
+            if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
+                *d = Some(dir.clone());
+            }
+            // Keep the default folder in step so the FLVSTX Import piano-roll script sees this take.
+            let default_dir = flvstx_core::midi::default_export_dir();
+            if default_dir != dir {
+                let mut g = shared.lock_store();
+                let _ = dispatch(&mut g, "export", &params(&default_dir));
+            }
+            let n = v["files"].as_array().map(|a| a.len()).unwrap_or(0);
+            shared.push_chat(ChatRole::System, format!("exported {n} files to {}. In FL: piano roll > Tools > Scripts > FLVSTX Import, or drag a .mid onto a Channel Rack slot.", dir.display()));
+        }
+        Err(e) => shared.push_chat(ChatRole::System, format!("export failed: {e}")),
+    }
+}
+
 fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
     ui.horizontal(|ui| {
@@ -1032,22 +1135,14 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         }
         ui.separator();
         let sec = ui_state.selected_section.clone();
-        if ui.button("Export section").on_hover_text("Writes latest.json/.mid (one per layer) for the FLVSTX Import piano-roll script").clicked() {
-            let mut g = shared.lock_store();
-            match dispatch(&mut g, "export", &serde_json::json!({ "section": sec })) {
-                Ok(v) => shared.push_chat(ChatRole::System, format!("exported {} files. In FL: piano roll > Tools > Scripts > FLVSTX Import", v["files"].as_array().map(|a| a.len()).unwrap_or(0))),
-                Err(e) => shared.push_chat(ChatRole::System, format!("export failed: {e}")),
-            }
+        if ui.button("Export section…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for this section").clicked() {
+            ask_export_dir(sec);
         }
-        if ui.button("Export song").clicked() {
-            let mut g = shared.lock_store();
-            match dispatch(&mut g, "export", &serde_json::json!({})) {
-                Ok(_) => shared.push_chat(ChatRole::System, "exported whole song to %LOCALAPPDATA%\\FLVSTX\\export (latest.mid + one .mid per layer)"),
-                Err(e) => shared.push_chat(ChatRole::System, format!("export failed: {e}")),
-            }
+        if ui.button("Export song…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for the whole song").clicked() {
+            ask_export_dir(None);
         }
-        if ui.button("Open folder").clicked() {
-            let dir = flvstx_core::midi::default_export_dir();
+        if ui.button("Open folder").on_hover_text("Opens the folder of the last export").clicked() {
+            let dir = last_export_dir();
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::process::Command::new("explorer").arg(&dir).spawn();
         }
