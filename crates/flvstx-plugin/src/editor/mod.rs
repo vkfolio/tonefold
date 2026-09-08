@@ -48,6 +48,8 @@ pub struct EditorState {
     last_loaded_hash: u64,
     status: String,
     spawn_attempted_at: Option<std::time::Instant>,
+    /// Last standalone autosave, so a busy session does not write on every edit.
+    last_autosave: Option<std::time::Instant>,
     /// Text/widget scale (1.0 = egui default). Defaults from the Windows DPI.
     pub ui_scale: f32,
     applied_scale: f32,
@@ -397,7 +399,18 @@ impl EditorState {
             if let Ok(s) = serde_json::to_string(&p) {
                 self.last_loaded_hash = crate::hash_str(&s);
                 if let Ok(mut w) = self.params.state_json.write() {
-                    *w = s;
+                    w.clone_from(&s);
+                }
+                // The standalone has no host to save state for it, so keep a copy on disk.
+                let due = self.last_autosave.map(|t| t.elapsed().as_secs_f32() > 2.0).unwrap_or(true);
+                if is_standalone() && due {
+                    self.last_autosave = Some(std::time::Instant::now());
+                    if let Some(path) = autosave_path() {
+                        if let Some(dir) = path.parent() {
+                            let _ = std::fs::create_dir_all(dir);
+                        }
+                        let _ = std::fs::write(path, &s);
+                    }
                 }
             }
         }
@@ -438,6 +451,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         last_loaded_hash: 0,
         status: String::new(),
         spawn_attempted_at: None,
+        last_autosave: None,
         ui_scale: system_dpi_scale(),
         applied_scale: 0.0,
         takes: Vec::new(),
@@ -457,6 +471,24 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         name_focused: false,
         md_cache: egui_commonmark::CommonMarkCache::default(),
     };
+    let mut state = state;
+    // The standalone picks up where it left off; in a DAW the host restores the project instead.
+    if is_standalone() {
+        if let Some(note) = flvstx_core::midi::default_export_dir().parent().map(|d| d.join("last-project.txt")) {
+            if let Ok(p) = std::fs::read_to_string(&note) {
+                let p = std::path::PathBuf::from(p.trim());
+                if p.is_file() {
+                    set_project_path(Some(p));
+                }
+            }
+        }
+        if let Some(path) = autosave_path().filter(|p| p.is_file()) {
+            if let Err(e) = open_project(&shared, &mut state, &path) {
+                dbg_log(&format!("autosave restore failed: {e}"));
+            }
+        }
+    }
+
     create_egui_editor(
         params.editor_state.clone(),
         state,
@@ -475,6 +507,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
             st.sync_state(&shared);
             poll_drag_result(&shared);
             poll_export(&shared);
+            poll_project(st, &shared);
             draw(ctx, st, &shared);
             ctx.request_repaint_after(std::time::Duration::from_millis(if st.turn_active || shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed) { 33 } else { 120 }));
         },
@@ -515,6 +548,40 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     };
     ui.horizontal(|ui| {
         ui.label(RichText::new("FLVSTX").strong().size(18.0 * st.ui_scale));
+        let file = project_path();
+        ui.menu_button("Song…", |ui| {
+            match &file {
+                Some(p) => ui.label(RichText::new(p.display().to_string()).small().weak()),
+                None => ui.label(RichText::new("not saved yet").small().weak()),
+            };
+            ui.separator();
+            if ui.button("New").on_hover_text("Empty song and a fresh chat (save first if you want to keep this one)").clicked() {
+                new_project(shared, st);
+                ui.close_menu();
+            }
+            if ui.button("Open…").clicked() {
+                ask_project(false);
+                ui.close_menu();
+            }
+            if ui.add_enabled(file.is_some(), egui::Button::new("Save")).clicked() {
+                if let Some(p) = &file {
+                    match save_project(shared, st, p) {
+                        Ok(()) => shared.push_chat(ChatRole::System, format!("saved {}", p.display())),
+                        Err(e) => shared.push_chat(ChatRole::System, format!("save failed: {e}")),
+                    }
+                }
+                ui.close_menu();
+            }
+            if ui.button("Save as…").clicked() {
+                ask_project(true);
+                ui.close_menu();
+            }
+        });
+        if let Some(p) = &file {
+            if let Some(n) = p.file_name() {
+                ui.label(RichText::new(n.to_string_lossy()).small().weak());
+            }
+        }
         ui.separator();
         let mut root = key.root as usize;
         let mut scale = key.scale;
@@ -989,6 +1056,156 @@ static EXPORT_PICKING: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// Folder of the last export; the dialog opens there and "Open folder" points at it.
 static LAST_EXPORT_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
+/// Project file chosen in a dialog, applied by the GUI thread: (path, save rather than open).
+static PROJECT_PICK: Mutex<Option<(std::path::PathBuf, bool)>> = Mutex::new(None);
+/// The project file the session came from / was last saved to.
+static PROJECT_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+const PROJECT_EXT: &str = "flvstx";
+
+fn project_path() -> Option<std::path::PathBuf> {
+    PROJECT_PATH.lock().ok().and_then(|p| p.clone())
+}
+
+fn set_project_path(path: Option<std::path::PathBuf>) {
+    if let Ok(mut p) = PROJECT_PATH.lock() {
+        *p = path.clone();
+    }
+    // Remembered so the standalone reopens the same song next time.
+    let note = flvstx_core::midi::default_export_dir().parent().map(|d| d.join("last-project.txt"));
+    if let Some(note) = note {
+        match path {
+            Some(p) => {
+                let _ = std::fs::create_dir_all(note.parent().unwrap_or(&note));
+                let _ = std::fs::write(&note, p.display().to_string());
+            }
+            None => {
+                let _ = std::fs::remove_file(&note);
+            }
+        }
+    }
+}
+
+/// Where the standalone keeps the live session, so nothing is lost when it is closed.
+fn autosave_path() -> Option<std::path::PathBuf> {
+    flvstx_core::midi::default_export_dir().parent().map(|d| d.join("autosave.flvstx"))
+}
+
+/// True when this is the standalone app rather than a plugin inside a DAW (which saves state itself).
+fn is_standalone() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+        .map(|n| n.contains("flvstx"))
+        .unwrap_or(false)
+}
+
+/// Asks for a project file on a worker thread; [`poll_project`] does the work.
+fn ask_project(save: bool) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("project: dialog already open");
+        return;
+    }
+    let start = project_path().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(last_export_dir);
+    let name = project_path()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| format!("song.{PROJECT_EXT}"));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(if save { "Save song as" } else { "Open song" })
+            .set_directory(&start)
+            .add_filter("FLVSTX song", &[PROJECT_EXT])
+            .add_filter("All files", &["*"]);
+        if save {
+            dialog = dialog.set_file_name(&name);
+        }
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = if save { dialog.save_file() } else { dialog.pick_file() };
+        dbg_log(&format!("project: dialog returned {:?}", picked));
+        EXPORT_PICKING.store(false, Ordering::Release);
+        if let Some(mut path) = picked {
+            if save && path.extension().is_none() {
+                path.set_extension(PROJECT_EXT);
+            }
+            if let Ok(mut p) = PROJECT_PICK.lock() {
+                *p = Some((path, save));
+            }
+        }
+    });
+}
+
+/// Writes the whole session (song, chat, composer session) as one JSON file.
+fn save_project(shared: &Shared, st: &EditorState, path: &std::path::Path) -> Result<(), String> {
+    let mut p = shared.to_persisted();
+    p.ui_scale = Some(st.ui_scale);
+    let json = serde_json::to_string_pretty(&p).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Replaces the session with the one in `path`.
+fn open_project(shared: &Shared, st: &mut EditorState, path: &std::path::Path) -> Result<(), String> {
+    let json = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let p: Persisted = serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(sc) = p.ui_scale {
+        st.ui_scale = sc;
+    }
+    shared.load_persisted(p);
+    st.piano.selection.clear();
+    st.takes.clear();
+    st.take_track = None;
+    // The host's blob is stale now; sync_state writes the loaded song back out on the next frame.
+    st.last_loaded_hash = 0;
+    st.last_persisted_revision = u64::MAX;
+    Ok(())
+}
+
+/// Starts an empty song, keeping the composer connection.
+fn new_project(shared: &Shared, st: &mut EditorState) {
+    shared.load_persisted(Persisted { session: flvstx_core::Session::default(), ..Default::default() });
+    if let Ok(mut c) = shared.chat.lock() {
+        c.clear();
+    }
+    if let Ok(mut s) = shared.agent_session_id.lock() {
+        *s = None;
+    }
+    st.piano.selection.clear();
+    st.takes.clear();
+    st.take_track = None;
+    st.last_loaded_hash = 0;
+    st.last_persisted_revision = u64::MAX;
+    set_project_path(None);
+}
+
+/// Applies a project file picked in the dialog thread.
+fn poll_project(st: &mut EditorState, shared: &Shared) {
+    let Some((path, save)) = PROJECT_PICK.lock().ok().and_then(|mut p| p.take()) else { return };
+    if save {
+        match save_project(shared, st, &path) {
+            Ok(()) => {
+                set_project_path(Some(path.clone()));
+                shared.push_chat(ChatRole::System, format!("saved {}", path.display()));
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("save failed: {e}")),
+        }
+    } else {
+        match open_project(shared, st, &path) {
+            Ok(()) => {
+                set_project_path(Some(path.clone()));
+                shared.push_chat(ChatRole::System, format!("opened {}", path.display()));
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("open failed: {e}")),
+        }
+    }
+}
+
 /// The plugin window, so the export dialog can be owned by it.
 #[cfg(windows)]
 struct ParentWindow(std::num::NonZeroIsize);
@@ -1136,7 +1353,11 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             if playing {
                 shared.playing.store(false, Ordering::Relaxed);
             } else {
-                shared.request_seek(shared.playback.load().loop_start);
+                // Start where the playhead is (dragged on the piano roll ruler), else from the top.
+                let buf = shared.playback.load();
+                let ph = shared.playhead_tick.load(Ordering::Relaxed);
+                let from = if (buf.loop_start..buf.loop_end).contains(&ph) { ph } else { buf.loop_start };
+                shared.seek_to(from);
                 shared.playing.store(true, Ordering::Relaxed);
             }
         }

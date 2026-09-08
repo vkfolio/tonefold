@@ -59,11 +59,14 @@ puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
    **MIDI > Input port** to 10. Every layer goes out on its own MIDI channel (shown in the Layers
    panel); the plugin's **MIDI output** parameter selects one channel per instance, so add one FLVSTX
    instance per instrument and pick that layer's channel on each. All instances in the project share one session, so each can send a different layer.
-4. Edit notes in the piano roll: double-click adds, drag moves, drag the right edge resizes,
+4. Move the playhead by dragging the bar ruler at the top of the piano roll; **Play** starts from
+   there. Click the piano keys down the left edge to hear a note (drag for a glissando); keys the layer
+   already uses are marked with a dot.
+5. Edit notes in the piano roll: double-click adds, drag moves, drag the right edge resizes,
    right-click or Delete removes, ↑/↓ transposes (Shift = octave), Ctrl+A selects all, Ctrl+D
    duplicates, drag in the velocity lane sets velocity, Ctrl+wheel zooms. The composer sees your
    edits on its next turn.
-5. Commit to FL: **Export… > MIDI** (whole song or this section) asks for a folder, then writes `latest.json`,
+6. Commit to FL: **Export… > MIDI** (whole song or this section) asks for a folder, then writes `latest.json`,
    `latest.mid` (all tracks) and one `.mid` per track into it. The same files are refreshed in
    `%LOCALAPPDATA%\FLVSTX\export\` too, which is where the import script reads them. Then either
    - open the target channel's piano roll and run **Tools > Scripts > FLVSTX Import** (choose the
@@ -78,7 +81,13 @@ entirely, every stem is rendered at the mix's gain so the stems add back up to t
 turned down rather than clipped if it goes over. Use it to send a take to someone, to check an idea
 without a DAW, or to drop the stems into a DAW as audio.
 
-The session, chat history and composer session id are saved inside the FL project.
+**Song…** (top bar) keeps songs as files: **New**, **Open…**, **Save**, **Save as…**. A `.flvstx` file
+holds the whole session — sections, layers, notes, chat and the composer session — so you can come back
+to a song later or keep several going.
+
+Inside FL Studio the session is also saved in the FL project, so a project reload restores it. The
+standalone app instead autosaves to `%LOCALAPPDATA%\FLVSTXutosave.flvstx` as you work and reopens
+that song on the next launch, so nothing is lost if you close it.
 
 ## Command line
 

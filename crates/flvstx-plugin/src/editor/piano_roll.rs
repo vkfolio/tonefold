@@ -21,6 +21,10 @@ enum Drag {
     Resize { origin: Pos2, orig: Vec<(usize, Note)> },
     Box { origin: Pos2, current: Pos2 },
     Velocity,
+    /// Scrubbing the playhead on the ruler.
+    Playhead,
+    /// Playing the key column like a keyboard.
+    Keys { last: u8 },
 }
 
 pub struct PianoRollView {
@@ -127,7 +131,7 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
             view.zoom = ((ui.available_width() - KEYS_W - 40.0) / (total_ticks as f32 / PPQ as f32)).clamp(8.0, 400.0);
             view.scroll_x = 0.0;
         }
-        ui.label(egui::RichText::new(format!("{} notes · double-click to add · drag to move · right edge to resize · right-click or Del to delete · ↑↓ transpose · Ctrl+A/D select all/duplicate", notes.len())).small().weak());
+        ui.label(egui::RichText::new(format!("{} notes · double-click to add · drag to move · right edge to resize · right-click or Del to delete · ↑↓ transpose · Ctrl+A/D select all/duplicate · drag the bar ruler to move the playhead · click the keys to hear them", notes.len())).small().weak());
     });
 
     let avail = ui.available_size();
@@ -174,13 +178,27 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
         }
     };
 
+    // Pitches this layer already uses, and the key held down in the key column.
+    let used: HashSet<u8> = notes.iter().map(|n| n.pitch).collect();
+    let pressed_key = match &view.drag {
+        Some(Drag::Keys { last }) => Some(*last),
+        _ => None,
+    };
+
     // Grid rows.
     if drums {
         for (i, lane) in DRUM_LANES.iter().enumerate() {
             let y = grid.top() + i as f32 * row_h;
             let r = Rect::from_min_size(Pos2::new(grid.left(), y), Vec2::new(grid.width(), row_h));
             painter.rect_filled(r, 0.0, if i % 2 == 0 { Color32::from_rgb(30, 32, 37) } else { Color32::from_rgb(27, 29, 33) });
-            painter.text(Pos2::new(rect.left() + 4.0, y + row_h / 2.0), Align2::LEFT_CENTER, *lane, FontId::monospace(11.0), Color32::from_rgb(200, 200, 200));
+            let lane_pitch = drum_lane_pitch(lane).unwrap_or(36);
+            let held = pressed_key == Some(lane_pitch);
+            let lr = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(KEYS_W - 2.0, row_h - 1.0));
+            painter.rect_filled(lr, 2.0, if held { color } else { Color32::from_rgb(38, 40, 46) });
+            painter.text(Pos2::new(rect.left() + 4.0, y + row_h / 2.0), Align2::LEFT_CENTER, *lane, FontId::monospace(11.0), if held { Color32::from_rgb(20, 20, 20) } else { Color32::from_rgb(200, 200, 200) });
+            if used.contains(&lane_pitch) {
+                painter.circle_filled(Pos2::new(rect.left() + KEYS_W - 7.0, y + row_h / 2.0), 2.5, color);
+            }
         }
     } else {
         let top_p = view.top_pitch as i32;
@@ -200,11 +218,23 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
             if pc == key.root {
                 painter.line_segment([Pos2::new(grid.left(), y + row_h), Pos2::new(grid.right(), y + row_h)], Stroke::new(1.0, Color32::from_rgb(60, 66, 80)));
             }
-            // Keys column.
+            // Keys column: click to hear the note; keys used by this layer are marked.
             let kr = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(KEYS_W - 2.0, row_h - 1.0));
-            painter.rect_filled(kr, 2.0, if black { Color32::from_rgb(40, 40, 44) } else { Color32::from_rgb(210, 210, 214) });
-            if pc == 0 {
-                painter.text(Pos2::new(rect.left() + 3.0, y + row_h / 2.0), Align2::LEFT_CENTER, pitch_name(p as u8), FontId::monospace(9.0), Color32::from_rgb(40, 40, 40));
+            let held = pressed_key == Some(p as u8);
+            let fill = if held {
+                color
+            } else if black {
+                Color32::from_rgb(40, 40, 44)
+            } else {
+                Color32::from_rgb(210, 210, 214)
+            };
+            painter.rect_filled(kr, 2.0, fill);
+            let ink = if held { Color32::from_rgb(20, 20, 20) } else if black { Color32::from_rgb(190, 190, 195) } else { Color32::from_rgb(40, 40, 40) };
+            if pc == 0 || (row_h >= 10.0 && !black) {
+                painter.text(Pos2::new(rect.left() + 3.0, y + row_h / 2.0), Align2::LEFT_CENTER, pitch_name(p as u8), FontId::monospace(9.0), ink);
+            }
+            if used.contains(&(p as u8)) {
+                painter.circle_filled(Pos2::new(rect.left() + KEYS_W - 7.0, y + row_h / 2.0), (row_h * 0.16).clamp(1.5, 3.0), color);
             }
         }
     }
@@ -242,12 +272,21 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
             painter.text(Pos2::new(x + 3.0, rect.top() + HEADER_H - 2.0), Align2::LEFT_BOTTOM, ev.chord.symbol(), FontId::proportional(10.0), track_color(TrackRole::Chords));
         }
     }
-    // Playhead.
+    // Playhead: always drawn, so it can be dragged on the ruler while stopped.
     let ph = shared.playhead_tick.load(Ordering::Relaxed);
     let sec_start = shared.lock_store().session.section_start(&section.id).unwrap_or(0);
-    if ph >= sec_start && ph < sec_start + total_ticks && (shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed)) {
+    let rolling = shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed);
+    if ph >= sec_start && ph < sec_start + total_ticks {
         let x = tick_to_x((ph - sec_start) as f32);
-        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.5, Color32::from_rgb(255, 230, 120)));
+        let c = if rolling { Color32::from_rgb(255, 230, 120) } else { Color32::from_rgb(150, 140, 90) };
+        painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.5, c));
+        // Handle in the ruler, so it reads as draggable.
+        let h = 6.0;
+        painter.add(egui::Shape::convex_polygon(
+            vec![Pos2::new(x - h, rect.top()), Pos2::new(x + h, rect.top()), Pos2::new(x, rect.top() + h * 1.4)],
+            c,
+            Stroke::NONE,
+        ));
     }
 
     // Working copy of notes with drag preview applied.
@@ -335,8 +374,39 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
     let pointer = resp.interact_pointer_pos();
     let in_grid = pointer.map(|p| grid.contains(p)).unwrap_or(false);
     let in_vel = pointer.map(|p| vel_rect.contains(p)).unwrap_or(false);
+    // The ruler (bar numbers / chord labels) scrubs the playhead; the key column plays notes.
+    let ruler = Rect::from_min_max(Pos2::new(grid.left(), rect.top()), Pos2::new(grid.right(), grid.top()));
+    let keys_rect = Rect::from_min_max(Pos2::new(rect.left(), grid.top()), Pos2::new(grid.left(), grid.bottom()));
+    if let Some(p) = resp.hover_pos() {
+        if ruler.contains(p) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        } else if keys_rect.contains(p) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    let seek_to_x = |x: f32| {
+        let tick = x_to_tick(x).clamp(0.0, total_ticks.saturating_sub(1) as f32) as u32;
+        shared.seek_to(sec_start + tick);
+    };
+    if ui.input(|i| i.pointer.primary_pressed()) {
+        if let Some(p) = pointer {
+            if ruler.contains(p) {
+                view.drag = Some(Drag::Playhead);
+                seek_to_x(p.x);
+            } else if keys_rect.contains(p) {
+                let pitch = y_to_pitch(p.y);
+                preview(shared, role, pitch, 0.8);
+                view.drag = Some(Drag::Keys { last: pitch });
+            }
+        }
+    }
+    let on_side = matches!(view.drag, Some(Drag::Playhead) | Some(Drag::Keys { .. }));
+    if ui.input(|i| i.pointer.primary_released()) && on_side {
+        // A click without movement never reports a drag stop, so let go here.
+        view.drag = None;
+    }
 
-    if resp.drag_started() {
+    if resp.drag_started() && !on_side {
         if let Some(p) = pointer {
             if in_vel {
                 view.drag = Some(Drag::Velocity);
@@ -366,6 +436,14 @@ pub fn show(ui: &mut egui::Ui, view: &mut PianoRollView, shared: &Shared) {
     if resp.dragged() {
         if let (Some(p), Some(d)) = (pointer, view.drag.as_mut()) {
             match d {
+                Drag::Playhead => seek_to_x(p.x),
+                Drag::Keys { last } => {
+                    let pitch = y_to_pitch(p.y);
+                    if pitch != *last {
+                        *last = pitch;
+                        preview(shared, role, pitch, 0.8);
+                    }
+                }
                 Drag::Box { current, .. } => *current = p,
                 Drag::Move { moved, .. } => *moved = true,
                 Drag::Velocity => {

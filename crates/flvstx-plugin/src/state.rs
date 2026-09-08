@@ -198,6 +198,12 @@ impl Shared {
         let epoch = (self.seek.load(Ordering::Relaxed) >> 32) + 1;
         self.seek.store((epoch << 32) | tick as u64, Ordering::Release);
     }
+    /// Moves the playhead to `tick` (both the marker the GUI draws and the audio thread's position),
+    /// so playback continues — or starts — from there.
+    pub fn seek_to(&self, tick: u32) {
+        self.playhead_tick.store(tick, Ordering::Relaxed);
+        self.request_seek(tick);
+    }
     pub fn request_panic(&self) {
         self.panic.fetch_add(1, Ordering::AcqRel);
     }
