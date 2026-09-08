@@ -1,7 +1,7 @@
 //! Kids' rhyme melodies: lyrics → syllables → rhythm (stressed syllables on strong beats),
 //! singable range (≤ an octave), stepwise motion, simple repetition, clear cadences.
 
-use super::{clamp_to_section, GenParams};
+use super::{clamp_to_section, GenParams, SongCtx};
 use crate::model::{Note, Section, Session, PPQ};
 use crate::theory::Key;
 use rand::Rng;
@@ -101,9 +101,9 @@ fn skeleton(rng: &mut impl Rng) -> Vec<i32> {
     options[rng.random_range(0..options.len())].to_vec()
 }
 
-pub fn generate_kids_melody(session: &Session, section: &Section, params: &GenParams) -> Vec<Note> {
+pub fn generate_kids_melody(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let key: Key = session.key;
-    let mut rng = params.rng(session, 51);
+    let mut rng = params.rng_in(session, 51, section, ctx);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let q = PPQ;
@@ -229,7 +229,7 @@ mod tests {
         s.section_mut(&id).unwrap().chords = parse_chords("| C | F | G | C |", &s.key, 8, s.bar_ticks()).unwrap();
         let p = GenParams { lyrics: Some("Twinkle twinkle little star\nHow I wonder what you are".into()), ..Default::default() };
         let sec = s.section(&id).unwrap().clone();
-        let notes = generate_kids_melody(&s, &sec, &p);
+        let notes = generate_kids_melody(&s, &sec, &p, SongCtx::of(&s, &id));
         assert_eq!(notes.iter().filter(|n| n.lyric.is_some()).count(), 14);
         assert!(notes.iter().all(|n| n.pitch >= 60 && n.pitch <= 72));
         assert_eq!(notes.last().unwrap().pitch, 60);

@@ -1,7 +1,7 @@
 //! Additional layer generators: pad, arpeggio, pluck, counter-melody, harmony, sub bass, percussion.
 //! All derive from what exists (chords for the harmonic layers, the lead for counter/harmony).
 
-use super::{clamp_to_section, GenParams, SongCtx};
+use super::{bar_roll, clamp_to_section, GenParams, SongCtx};
 use crate::model::{Note, Section, SectionRole, Session, TrackRole, PPQ};
 use crate::theory::Key;
 use crate::voicing::{voice_lead, VoicingParams};
@@ -28,7 +28,7 @@ fn rate_ticks(rate: Option<&str>, energy: f32, style: &str) -> u32 {
 /// Pad: sustained voicings, 4 voices, wide spacing, slow strum; thinner and lower in intros/breaks.
 pub fn generate_pad(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let energy = ctx.effective_energy(params.energy(section));
-    let mut rng = params.rng(session, 61);
+    let mut rng = params.rng_in(session, 61, section, ctx);
     let total = section.bars * session.bar_ticks();
     let voices = if energy < 0.4 { 3 } else { 4 };
     let vp = VoicingParams { lo: 50, hi: 79, voices, avoid_root_on_top: true, add_low_root: energy > 0.5 };
@@ -60,14 +60,18 @@ pub fn generate_pad(session: &Session, section: &Section, params: &GenParams, ct
 pub fn generate_arp(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let style = params.style(session).to_ascii_lowercase();
     let energy = ctx.effective_energy(params.energy(section));
-    let mut rng = params.rng(session, 71);
+    let mut rng = params.rng_in(session, 71, section, ctx);
     let total = section.bars * session.bar_ticks();
     let base_rate = rate_ticks(params.rate.as_deref(), energy, &style);
     let pattern = params.pattern.clone().unwrap_or_else(|| if rng.random_bool(0.6) { "up".into() } else { "updown".into() }).to_ascii_lowercase();
     let octaves = params.octaves.unwrap_or(if energy > 0.6 { 2 } else { 1 }).clamp(1, 3);
     let (lo, hi) = TrackRole::Arpeggio.register();
     let gate = if style.contains("pluck") || energy > 0.7 { 0.5 } else { 0.8 };
+    let stream = params.stream(session, 71, section, ctx);
+    let bar = session.bar_ticks();
     let mut notes = Vec::new();
+    // The figure runs on through the chord changes rather than restarting on each one.
+    let mut i = 0usize;
     for ev in &section.chords {
         let mut tones: Vec<u8> = ev.chord.tones_in_range(lo, lo + 12 * octaves as u8 - 1);
         // Start on the root.
@@ -109,17 +113,23 @@ pub fn generate_arp(session: &Session, section: &Section, params: &GenParams, ct
             _ => tones.clone(),
         };
         let mut t = ev.start;
-        let mut i = 0usize;
         while t < ev.start + ev.len {
             // Builds: rate doubles halfway through the section.
             let rate = if matches!(ctx.role, SectionRole::Build) && t > total / 2 { (base_rate / 2).max(PPQ / 8) } else { base_rate };
-            let p = seq[i % seq.len()].min(hi);
+            let b = t / bar;
+            let mut p = seq[i % seq.len()].min(hi);
+            // Once a bar, jump the last note of the figure an octave — the flick a player adds.
+            let last_in_bar = (t % bar) + rate >= bar;
+            if last_in_bar && bar_roll(stream, b, 0x4152) < 0.35 && p + 12 <= hi {
+                p += 12;
+            }
             let accent = (t % PPQ) == 0;
             let mut vel = 0.55 + energy * 0.25 + if accent { 0.12 } else { 0.0 };
+            vel += (bar_roll(stream, b * 32 + (i as u32 % 32), 0x4153) - 0.5) * 0.1;
             if matches!(ctx.role, SectionRole::Build) {
                 vel += (t as f32 / total.max(1) as f32) * 0.2;
             }
-            notes.push(Note::new(p, t, ((rate as f32) * gate) as u32, vel.min(1.0)));
+            notes.push(Note::new(p, t, ((rate as f32) * gate) as u32, vel.clamp(0.2, 1.0)));
             t += rate;
             i += 1;
         }
@@ -131,7 +141,7 @@ pub fn generate_arp(session: &Session, section: &Section, params: &GenParams, ct
 /// Pluck: short chord stabs on off-beats (house/pop) or a syncopated pattern, 3 voices.
 pub fn generate_pluck(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let energy = ctx.effective_energy(params.energy(section));
-    let mut rng = params.rng(session, 81);
+    let mut rng = params.rng_in(session, 81, section, ctx);
     let total = section.bars * session.bar_ticks();
     let vp = VoicingParams { lo: 57, hi: 84, voices: 3, avoid_root_on_top: false, add_low_root: false };
     let voicings = voice_lead(&section.chords, &vp);
@@ -145,19 +155,28 @@ pub fn generate_pluck(session: &Session, section: &Section, params: &GenParams, 
         &[e, q * 2, q * 2 + e, q * 3 + s16 * 3],            // pushy
         &[s16 * 3, q + s16 * 3, q * 2 + s16 * 3, q * 3 + e], // 16th anticipations
     ];
-    let pat = patterns[if energy > 0.6 { rng.random_range(0..patterns.len()) } else { 0 }];
+    let main = if energy > 0.6 { rng.random_range(0..patterns.len()) } else { 0 };
+    let alt = (main + 1 + (rng.random_range(0..2) as usize)) % patterns.len();
+    let stream = params.stream(session, 81, section, ctx);
     let bar = session.bar_ticks();
     let mut notes = Vec::new();
     for (ev, v) in section.chords.iter().zip(&voicings) {
         let first_bar = ev.start / bar;
         let last_bar = (ev.start + ev.len - 1) / bar;
         for b in first_bar..=last_bar {
+            // A A B A: the third bar of every four answers the other three.
+            let pat = if b % 4 == 2 { patterns[alt] } else { patterns[main] };
             for &off in pat {
                 let t = b * bar + off;
                 if t < ev.start || t >= ev.start + ev.len {
                     continue;
                 }
+                // Thin the chord on the weak hits so it does not sit as a block all bar long.
+                let thin = off % PPQ != 0 && bar_roll(stream, b * 16 + off / (PPQ / 4), 0x504C) < 0.25;
                 for (i, &p) in v.iter().enumerate() {
+                    if thin && i + 1 == v.len() {
+                        continue;
+                    }
                     notes.push(Note::new(p, t, s16 * 3 / 2, (0.6 + energy * 0.25 - i as f32 * 0.04).clamp(0.2, 1.0)));
                 }
             }
@@ -259,9 +278,12 @@ pub fn generate_harmony(session: &Session, section: &Section, params: &GenParams
                 }
             }
         }
+        // A backing part doubles the important notes, a hair behind, with its own flatter
+        // dynamics — tracking the lead exactly is what makes a harmony sound cloned.
         let mut m = n.clone();
         m.pitch = p.clamp(lo, hi);
-        m.vel = (n.vel * 0.8).max(0.2);
+        m.vel = (0.62 + 0.25 * n.vel).clamp(0.2, 0.95);
+        m.start = n.start + PPQ / 96;
         m.lyric = None;
         out.push(m);
     }
@@ -296,7 +318,7 @@ pub fn generate_sub(session: &Session, section: &Section, params: &GenParams, ct
 pub fn generate_percussion(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let energy = ctx.effective_energy(params.energy(section));
     let density = params.density.unwrap_or(energy);
-    let mut rng = params.rng(session, 91);
+    let mut rng = params.rng_in(session, 91, section, ctx);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let s16 = PPQ / 4;
@@ -329,14 +351,22 @@ pub fn generate_percussion(session: &Session, section: &Section, params: &GenPar
             }
         }
     }
+    let stream = params.stream(session, 91, section, ctx);
     let mut notes = Vec::new();
     for b in 0..section.bars {
-        for (pitch, hits, rot, vel) in &lanes {
-            let pat = super::drums::euclid((*hits).min(steps), steps, *rot);
+        for (li, (pitch, hits, rot, vel)) in lanes.iter().enumerate() {
+            // Rotate the figure every couple of bars and drop the odd hit, so the loop moves.
+            let turn = (b / 2) as usize * (1 + li);
+            let pat = super::drums::euclid((*hits).min(steps), steps, (rot + turn) % steps);
             for (i, on) in pat.iter().enumerate() {
                 if *on {
+                    if bar_roll(stream, b * 32 + i as u32 + li as u32 * 7, 0x5045) < 0.08 {
+                        continue;
+                    }
                     let accent = i % 4 == 0;
-                    notes.push(Note::new(*pitch, b * bar + i as u32 * s16, s16 * 3 / 4, if accent { vel + 0.15 } else { *vel }));
+                    let jitter = (bar_roll(stream, b * 32 + i as u32, 0x5046) - 0.5) * 0.1;
+                    let v = if accent { vel + 0.15 } else { *vel } + jitter;
+                    notes.push(Note::new(*pitch, b * bar + i as u32 * s16, s16 * 3 / 4, v.clamp(0.15, 1.0)));
                 }
             }
         }

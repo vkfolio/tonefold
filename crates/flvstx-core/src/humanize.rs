@@ -23,20 +23,27 @@ pub struct HumanizeParams {
     pub phrase_arc: f32,
     /// Gate length variation fraction (0.1 = 90%..110%).
     pub gate_var: f32,
+    /// How far the kit spreads around `pocket_ms` (kick behind, hats ahead). 0 = one offset for all.
+    pub pocket_spread: f32,
+    /// Backbeat placement on top of `pocket_ms`: negative pushes the snare, positive lays it back
+    /// (hip-hop and R&B sit 10-20 ms behind, pop and rock a few ms ahead).
+    pub snare_pocket_ms: f32,
     pub seed: u64,
 }
 
 impl Default for HumanizeParams {
     fn default() -> Self {
         HumanizeParams {
-            timing_ms: 8.0,
+            timing_ms: 9.0,
             pocket_ms: 0.0,
             swing: 0.5,
             swing_16ths: false,
-            vel_jitter: 0.06,
-            accent: 0.5,
-            phrase_arc: 0.3,
+            vel_jitter: 0.05,
+            accent: 0.6,
+            phrase_arc: 0.45,
             gate_var: 0.08,
+            pocket_spread: 1.0,
+            snare_pocket_ms: 0.0,
             seed: 1,
         }
     }
@@ -71,28 +78,19 @@ impl HumanizeParams {
             }
             _ => {}
         }
-        if s.contains("lofi") || s.contains("lo-fi") || s.contains("hip") || s.contains("trap") || s.contains("boom") {
-            p.swing = if s.contains("trap") { 0.54 } else { 0.6 };
-            p.swing_16ths = true;
-            p.timing_ms *= 1.4;
-            if role == TrackRole::Drums {
-                p.pocket_ms = -3.0;
-            }
-        } else if s.contains("house") || s.contains("edm") || s.contains("techno") || s.contains("dance") {
-            p.timing_ms *= 0.5;
-            p.swing = if s.contains("house") { 0.55 } else { 0.5 };
-            p.swing_16ths = true;
-        } else if s.contains("jazz") || s.contains("swing") {
-            p.swing = 0.66;
-            p.timing_ms *= 1.3;
-        } else if s.contains("cinema") || s.contains("orchestra") || s.contains("ambient") {
-            p.timing_ms *= 1.6;
-            p.accent = 0.3;
-            p.phrase_arc = 0.6;
-        } else if s.contains("kid") || s.contains("nursery") || s.contains("rhyme") {
-            p.timing_ms *= 0.8;
-            p.swing = 0.52;
-            p.accent = 0.6;
+        let feel = StyleFeel::of(&s);
+        p.swing = feel.swing;
+        p.swing_16ths = feel.swing_16ths;
+        p.timing_ms *= feel.timing_mul;
+        p.snare_pocket_ms = feel.snare_pocket_ms;
+        if role.humanize_base() == TrackRole::Drums {
+            p.pocket_ms += feel.drum_pocket_ms;
+        }
+        if let Some(a) = feel.accent {
+            p.accent = a;
+        }
+        if let Some(arc) = feel.phrase_arc {
+            p.phrase_arc = arc;
         }
         p
     }
@@ -118,6 +116,85 @@ pub fn metric_weight(tick: u32, bar_ticks: u32) -> f32 {
     }
 }
 
+/// How a style sits against the grid. A table rather than an if/else chain so every style — including
+/// the ones we have never heard of — gets a real feel instead of falling through to a dead-straight
+/// default (which is what "pop", the default style, used to do).
+#[derive(Debug, Clone, Copy)]
+pub struct StyleFeel {
+    pub swing: f32,
+    pub swing_16ths: bool,
+    pub timing_mul: f32,
+    /// Applied to drum tracks on top of the role preset.
+    pub drum_pocket_ms: f32,
+    /// Backbeat placement: negative pushes, positive lays back.
+    pub snare_pocket_ms: f32,
+    pub accent: Option<f32>,
+    pub phrase_arc: Option<f32>,
+    /// Groove template name, applied before the random humanization.
+    pub groove: Option<&'static str>,
+}
+
+impl StyleFeel {
+    /// Straight but not mechanical: a hair of 16th shuffle and a pushed backbeat, which is how a
+    /// pop record is actually played.
+    pub const DEFAULT: StyleFeel = StyleFeel {
+        swing: 0.52,
+        swing_16ths: true,
+        timing_mul: 1.0,
+        drum_pocket_ms: 0.0,
+        snare_pocket_ms: -3.0,
+        accent: None,
+        phrase_arc: None,
+        groove: Some("straight_pop"),
+    };
+
+    pub fn of(style: &str) -> StyleFeel {
+        let s = style.to_ascii_lowercase();
+        let has = |keys: &[&str]| keys.iter().any(|k| s.contains(k));
+        if has(&["lofi", "lo-fi", "boom"]) {
+            StyleFeel { swing: 0.60, timing_mul: 1.4, drum_pocket_ms: -3.0, snare_pocket_ms: 12.0, groove: Some("boom_bap"), ..StyleFeel::DEFAULT }
+        } else if has(&["trap", "drill"]) {
+            StyleFeel { swing: 0.54, timing_mul: 1.1, drum_pocket_ms: -2.0, snare_pocket_ms: 8.0, groove: Some("swing_16"), ..StyleFeel::DEFAULT }
+        } else if has(&["hip", "r&b", "rnb", "neo-soul", "neosoul", "soul"]) {
+            StyleFeel { swing: 0.58, timing_mul: 1.3, drum_pocket_ms: -4.0, snare_pocket_ms: 14.0, groove: Some("boom_bap"), ..StyleFeel::DEFAULT }
+        } else if has(&["house", "edm", "techno", "dance", "trance"]) {
+            StyleFeel { swing: if s.contains("house") { 0.55 } else { 0.50 }, timing_mul: 0.5, snare_pocket_ms: -2.0, groove: Some("house"), ..StyleFeel::DEFAULT }
+        } else if has(&["jazz", "swing", "bebop"]) {
+            StyleFeel { swing: 0.66, swing_16ths: false, timing_mul: 1.3, snare_pocket_ms: 4.0, groove: Some("jazz_swing"), ..StyleFeel::DEFAULT }
+        } else if has(&["cinema", "orchestra", "ambient", "epic", "score"]) {
+            StyleFeel { swing: 0.5, swing_16ths: false, timing_mul: 1.6, snare_pocket_ms: 0.0, accent: Some(0.3), phrase_arc: Some(0.6), groove: None, ..StyleFeel::DEFAULT }
+        } else if has(&["latin", "reggaeton", "salsa", "bossa", "afro"]) {
+            StyleFeel { swing: 0.5, swing_16ths: false, timing_mul: 1.1, snare_pocket_ms: 0.0, groove: Some("tresillo"), ..StyleFeel::DEFAULT }
+        } else if has(&["kid", "nursery", "rhyme", "lullab"]) {
+            StyleFeel { swing: 0.52, swing_16ths: false, timing_mul: 0.8, snare_pocket_ms: 0.0, accent: Some(0.6), groove: None, ..StyleFeel::DEFAULT }
+        } else if has(&["rock", "metal", "punk", "country", "folk"]) {
+            StyleFeel { swing: 0.5, swing_16ths: false, timing_mul: 1.1, snare_pocket_ms: -5.0, groove: Some("straight_pop"), ..StyleFeel::DEFAULT }
+        } else {
+            StyleFeel::DEFAULT
+        }
+    }
+}
+
+/// Random-walk coefficients and the stationary deviation they produce, so `timing_ms` can be
+/// normalised back to real milliseconds: sqrt(AR_B^2 * (1/3) / (1 - AR_A^2)).
+const AR_A: f32 = 0.7;
+const AR_B: f32 = 0.3;
+const AR_SIGMA: f32 = 0.2425;
+
+/// Where this note sits against the beat. A kit is not one instrument: the kick leans back, the
+/// backbeat carries the style's feel, and the hats push. Pitched parts just use `pocket_ms`.
+fn pocket_ms_for(p: &HumanizeParams, role: TrackRole, pitch: u8) -> f32 {
+    if role.humanize_base() != TrackRole::Drums {
+        return p.pocket_ms;
+    }
+    match pitch {
+        35 | 36 => p.pocket_ms + 4.0 * p.pocket_spread,          // kick behind
+        37..=40 => p.pocket_ms + p.snare_pocket_ms,              // backbeat, per style
+        42 | 44 | 46 | 51 | 59 => p.pocket_ms - 3.0 * p.pocket_spread, // hats and ride push
+        _ => p.pocket_ms,
+    }
+}
+
 /// Applies humanization in place. `bar_ticks` is the bar length; `tempo` in BPM converts ms to ticks.
 pub fn humanize(notes: &mut [Note], p: &HumanizeParams, role: TrackRole, tempo: f32, bar_ticks: u32) {
     if notes.is_empty() {
@@ -131,9 +208,13 @@ pub fn humanize(notes: &mut [Note], p: &HumanizeParams, role: TrackRole, tempo: 
     // Correlated timing drift per note (random walk pulled back to the grid).
     let mut drift = 0.0f32;
     let swing_unit = if p.swing_16ths { PPQ / 4 } else { PPQ / 2 };
-    let max_shift = ms_to_ticks(20.0, tempo);
+    // A player is loosest where the grid is finest, but never four times tighter on a downbeat —
+    // that reads as quantized. See `AR_SIGMA`: the walk is normalised so `timing_ms` is honest.
+    let cap = ms_to_ticks((3.0 * p.timing_ms).min(45.0), tempo);
     let mut last_start = u32::MAX;
     let mut chord_shift = 0.0f32;
+    let mut phrase_idx = u32::MAX;
+    let mut phrase_wobble = 0.0f32;
 
     for n in notes.iter_mut() {
         let w = metric_weight(n.start, bar_ticks);
@@ -150,16 +231,24 @@ pub fn humanize(notes: &mut [Note], p: &HumanizeParams, role: TrackRole, tempo: 
 
         // Notes starting together (chords) move together, so decide the shift once per onset.
         if grid_start != last_start {
+            // A new phrase resets most of the accumulated drift and picks up its own slight lean,
+            // so phrase 2 does not simply continue phrase 1's wander.
+            let this_phrase = grid_start / phrase.max(1);
+            if this_phrase != phrase_idx {
+                phrase_idx = this_phrase;
+                drift *= 0.3;
+                phrase_wobble = rng.random_range(-1.0..1.0) * 1.5;
+            }
             let noise: f32 = rng.random_range(-1.0..1.0);
-            drift = 0.7 * drift + 0.3 * noise;
+            drift = AR_A * drift + AR_B * noise;
             let scale = match w {
-                x if x >= 1.0 => 0.25,
-                x if x >= 0.75 => 0.4,
-                x if x >= 0.5 => 0.7,
+                x if x >= 1.0 => 0.55,
+                x if x >= 0.75 => 0.7,
+                x if x >= 0.5 => 0.9,
                 _ => 1.0,
             };
-            let t = drift * ms_to_ticks(p.timing_ms, tempo) * scale;
-            chord_shift = t.clamp(-max_shift, max_shift) + ms_to_ticks(p.pocket_ms, tempo);
+            let t = (drift / AR_SIGMA) * ms_to_ticks(p.timing_ms, tempo) * scale;
+            chord_shift = t.clamp(-cap, cap) + ms_to_ticks(pocket_ms_for(p, role, n.pitch) + phrase_wobble, tempo);
             last_start = grid_start;
         }
         shift += chord_shift;
@@ -186,7 +275,7 @@ pub fn humanize(notes: &mut [Note], p: &HumanizeParams, role: TrackRole, tempo: 
         n.vel = v.clamp(0.05, 1.0);
 
         // Gate length.
-        if p.gate_var > 0.0 && role != TrackRole::Drums {
+        if p.gate_var > 0.0 && role.humanize_base() != TrackRole::Drums {
             let g: f32 = 1.0 + rng.random_range(-1.0..1.0) * p.gate_var + (n.vel - 0.7) * 0.15;
             n.len = ((n.len as f32) * g.clamp(0.6, 1.15)).round().max(PPQ as f32 / 16.0) as u32;
         }
@@ -242,6 +331,64 @@ pub fn extract_groove(notes: &[Note], bar_ticks: u32) -> Groove {
     Groove { offsets: off, vel_mul: vel }
 }
 
+/// Built-in feels, as 16 per-16th (offset in ms, velocity multiplier) pairs. These are the
+/// systematic part of a groove — where a style consistently sits against the grid — so they are
+/// applied to quantized notes *before* [`humanize`] wanders around them.
+pub fn groove_template(name: &str, role: TrackRole, tempo: f32) -> Option<Groove> {
+    let drums = role.humanize_base() == TrackRole::Drums;
+    // (ms offset, velocity multiplier) for the 16 sixteenths of a bar.
+    let cells: [(f32, f32); 16] = match name {
+        // Straight, but with the off-16ths a touch early and softer — the "80/20" hit distribution.
+        "straight_pop" => [
+            (0.0, 1.00), (-2.0, 0.82), (-1.0, 0.90), (-2.0, 0.80),
+            (0.0, 0.96), (-2.0, 0.82), (-1.0, 0.88), (-2.0, 0.80),
+            (0.0, 0.98), (-2.0, 0.82), (-1.0, 0.90), (-2.0, 0.80),
+            (0.0, 0.94), (-2.0, 0.82), (-1.0, 0.88), (-2.0, 0.78),
+        ],
+        // MPC-style 16th swing: every other 16th late and quieter.
+        "swing_16" => [
+            (0.0, 1.00), (22.0, 0.72), (0.0, 0.88), (22.0, 0.74),
+            (0.0, 0.96), (22.0, 0.72), (0.0, 0.86), (22.0, 0.74),
+            (0.0, 0.98), (22.0, 0.72), (0.0, 0.88), (22.0, 0.74),
+            (0.0, 0.94), (22.0, 0.70), (0.0, 0.86), (22.0, 0.72),
+        ],
+        // Behind-the-beat hip-hop/R&B: heavy swing plus a dragged backbeat.
+        "boom_bap" => [
+            (0.0, 1.00), (30.0, 0.68), (2.0, 0.85), (30.0, 0.70),
+            (10.0, 0.98), (30.0, 0.68), (2.0, 0.84), (30.0, 0.70),
+            (0.0, 0.98), (30.0, 0.68), (2.0, 0.85), (30.0, 0.70),
+            (10.0, 0.94), (30.0, 0.66), (2.0, 0.84), (28.0, 0.70),
+        ],
+        // Four-to-the-floor: dead-on kicks, off-8ths pushed slightly early.
+        "house" => [
+            (0.0, 1.00), (-3.0, 0.86), (-3.0, 0.92), (-3.0, 0.86),
+            (0.0, 1.00), (-3.0, 0.86), (-3.0, 0.90), (-3.0, 0.86),
+            (0.0, 1.00), (-3.0, 0.86), (-3.0, 0.92), (-3.0, 0.86),
+            (0.0, 1.00), (-3.0, 0.86), (-3.0, 0.90), (-3.0, 0.84),
+        ],
+        // Triplet feel: the second eighth two thirds of the way through the beat.
+        "jazz_swing" => [
+            (0.0, 1.00), (0.0, 0.70), (55.0, 0.80), (0.0, 0.70),
+            (0.0, 0.92), (0.0, 0.70), (55.0, 0.86), (0.0, 0.70),
+            (0.0, 0.96), (0.0, 0.70), (55.0, 0.80), (0.0, 0.70),
+            (0.0, 0.92), (0.0, 0.70), (55.0, 0.86), (0.0, 0.70),
+        ],
+        // 3+3+2 accent grouping (tresillo): on the grid, but the weight moves.
+        "tresillo" => [
+            (0.0, 1.15), (0.0, 0.78), (0.0, 0.85), (0.0, 0.80),
+            (0.0, 0.82), (0.0, 0.78), (0.0, 1.12), (0.0, 0.80),
+            (0.0, 0.84), (0.0, 0.78), (0.0, 0.86), (0.0, 0.80),
+            (0.0, 1.10), (0.0, 0.78), (0.0, 0.86), (0.0, 0.80),
+        ],
+        _ => return None,
+    };
+    // Pitched parts follow the feel's timing but keep their own dynamics; only a kit wants the
+    // velocity mask, or a pad ends up pumping.
+    let offsets = cells.iter().map(|(ms, _)| ms_to_ticks(*ms, tempo)).collect();
+    let vel_mul = cells.iter().map(|(_, v)| if drums { *v } else { 1.0 + (*v - 1.0) * 0.3 }).collect();
+    Some(Groove { offsets, vel_mul })
+}
+
 pub fn apply_groove(notes: &mut [Note], groove: &Groove, strength: f32, bar_ticks: u32) {
     let step = PPQ / 4;
     let n = groove.offsets.len().max(1);
@@ -268,7 +415,7 @@ mod tests {
         humanize(&mut b, &p, TrackRole::Melody, 120.0, PPQ * 4);
         assert_eq!(a, b);
         let grid = mk();
-        let max_ticks = ms_to_ticks(20.0, 120.0) as i64 + 1;
+        let max_ticks = ms_to_ticks(3.0 * p.timing_ms + p.pocket_ms.abs(), 120.0) as i64 + 1;
         for (h, g) in a.iter().zip(&grid) {
             assert!((h.start as i64 - g.start as i64).abs() <= max_ticks);
             assert!(h.vel > 0.5 && h.vel <= 1.0);

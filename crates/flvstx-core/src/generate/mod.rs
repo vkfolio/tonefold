@@ -63,9 +63,52 @@ pub struct GenParams {
     pub from_section: Option<String>,
 }
 
+/// FNV-1a. Used instead of `DefaultHasher` because `RandomState` is seeded per process, which
+/// would make the same seed produce a different song on every run.
+pub fn hash_str(s: &str) -> u64 {
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// A deterministic roll in 0..1 for bar `bar` of a clip. Hashing rather than drawing from the
+/// generator's `ChaCha8Rng` keeps variation order-independent: adding a new roll later does not
+/// shift every draw that follows it and silently rewrite the rest of the part.
+pub fn bar_roll(seed: u64, bar: u32, salt: u64) -> f32 {
+    let h = splitmix64(seed ^ (bar as u64).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ salt.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    (h >> 11) as f32 / (1u64 << 53) as f32
+}
+
 impl GenParams {
     pub fn rng(&self, session: &Session, salt: u64) -> ChaCha8Rng {
         ChaCha8Rng::seed_from_u64(self.seed.unwrap_or(session.seed).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(salt))
+    }
+
+    /// Per-section RNG: the same layer in two sections (or in the same section twice over) draws a
+    /// different stream, so a repeated chorus is a new performance rather than a copy.
+    pub fn rng_in(&self, session: &Session, salt: u64, section: &Section, ctx: SongCtx) -> ChaCha8Rng {
+        ChaCha8Rng::seed_from_u64(splitmix64(self.stream(session, salt, section, ctx)))
+    }
+
+    /// The seed behind [`rng_in`], also used for per-bar rolls and for humanization.
+    pub fn stream(&self, session: &Session, salt: u64, section: &Section, ctx: SongCtx) -> u64 {
+        self.seed
+            .unwrap_or(session.seed)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(salt)
+            .wrapping_add(hash_str(&section.id).wrapping_mul(0x0000_0100_0000_01B3))
+            .wrapping_add((ctx.occurrence as u64).wrapping_mul(0x2545_F491_4F6C_DD1D))
     }
     pub fn style<'a>(&'a self, session: &'a Session) -> &'a str {
         self.style.as_deref().unwrap_or(&session.style)
@@ -136,7 +179,7 @@ pub fn generate_track(session: &mut Session, track: &str, section_id: &str, para
         TrackRole::Melody => {
             let s = params.style(session).to_ascii_lowercase();
             if s.contains("kid") || s.contains("nursery") || s.contains("rhyme") || params.lyrics.is_some() || section.lyrics.is_some() {
-                kids::generate_kids_melody(session, &section, params)
+                kids::generate_kids_melody(session, &section, params, ctx)
             } else {
                 melody::generate_melody(session, &section, params, ctx)
             }
@@ -152,9 +195,23 @@ pub fn generate_track(session: &mut Session, track: &str, section_id: &str, para
         TrackRole::Percussion => layers::generate_percussion(session, &section, params, ctx),
     };
     if params.humanize.unwrap_or(true) {
+        let style = params.style(session).to_string();
+        // Groove first: it says where this style systematically sits against the grid, and it bins
+        // notes by their nearest 16th — so it has to see them before humanization moves them.
+        let groove_name = session.track_by(&track_id).and_then(|t| t.groove.clone()).or_else(|| session.groove.clone());
+        let groove = match groove_name.as_deref() {
+            Some("none") => None,
+            Some(name) => crate::humanize::groove_template(name, kind, session.tempo),
+            None => crate::humanize::StyleFeel::of(&style).groove.and_then(|n| crate::humanize::groove_template(n, kind, session.tempo)),
+        };
+        if let Some(g) = groove {
+            crate::humanize::apply_groove(&mut notes, &g, 0.6, session.bar_ticks());
+        }
         let mut hp = HumanizeParams::preset(kind.humanize_base(), params.style(session));
-        hp.seed = params.seed.unwrap_or(session.seed);
-        humanize(&mut notes, &hp, kind.humanize_base(), session.tempo, session.bar_ticks());
+        // Section in the seed so repeats breathe differently; the real role (not the preset's base)
+        // so a pad, an arp and the chords do not all move on the same random walk.
+        hp.seed = params.seed.unwrap_or(session.seed) ^ hash_str(&section.id).wrapping_mul(0x9E37_79B9);
+        humanize(&mut notes, &hp, kind, session.tempo, session.bar_ticks());
     }
     clamp_to_section(&mut notes, section.bars * session.bar_ticks());
     let clip = Clip::new(notes, ClipSource::Generated { seed: params.seed.unwrap_or(session.seed), params: serde_json::to_value(params).unwrap_or_default() });
@@ -199,5 +256,79 @@ pub(crate) fn clamp_to_section(notes: &mut Vec<crate::model::Note>, total: u32) 
     notes.retain(|n| n.start < total);
     for n in notes.iter_mut() {
         n.len = n.len.min(total - n.start).max(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyze::analyze_clip;
+    use crate::model::SectionRole;
+
+    fn song(style: &str) -> Session {
+        let mut s = Session::default();
+        s.style = style.into();
+        for (name, bars, role) in [("Verse", 8, SectionRole::Verse), ("Chorus", 8, SectionRole::Chorus), ("Verse 2", 8, SectionRole::Verse), ("Chorus 2", 8, SectionRole::Chorus)] {
+            let id = s.add_section(name, bars, role.default_energy());
+            s.section_mut(&id).unwrap().role = role;
+        }
+        generate_song(&mut s, &GenParams::default()).unwrap();
+        s
+    }
+
+    /// The seeded contract: the same seed must still produce the same song, run after run.
+    #[test]
+    fn same_seed_same_song() {
+        let a = serde_json::to_string(&song("pop")).unwrap();
+        let b = serde_json::to_string(&song("pop")).unwrap();
+        assert_eq!(a, b, "generation is not reproducible from the seed");
+    }
+
+    /// ...but a repeat is a new performance, not a photocopy: the second chorus must differ from
+    /// the first while still being recognisably the same music.
+    #[test]
+    fn repeated_sections_differ() {
+        let s = song("pop");
+        let choruses: Vec<String> = s.sections.iter().filter(|x| x.role == SectionRole::Chorus).map(|x| x.id.clone()).collect();
+        assert_eq!(choruses.len(), 2, "fixture should have two choruses");
+        let (a, b) = (choruses[0].as_str(), choruses[1].as_str());
+        let (mut compared, mut differing) = (0, 0);
+        for t in &s.tracks {
+            let (Some(ca), Some(cb)) = (s.clip(&t.id, a), s.clip(&t.id, b)) else { continue };
+            if ca.notes.is_empty() || cb.notes.is_empty() {
+                continue;
+            }
+            compared += 1;
+            if ca.notes != cb.notes {
+                differing += 1;
+            }
+            // Same music, though: the two takes should still share most of their pitch content.
+            let pa: std::collections::HashSet<u8> = ca.notes.iter().map(|n| n.pitch).collect();
+            let pb: std::collections::HashSet<u8> = cb.notes.iter().map(|n| n.pitch).collect();
+            let shared = pa.intersection(&pb).count() as f32 / pa.union(&pb).count().max(1) as f32;
+            assert!(shared > 0.3, "{} drifted into unrelated material (pitch overlap {shared:.2})", t.id);
+        }
+        assert!(compared >= 3, "expected several layers in both choruses, got {compared}");
+        assert_eq!(differing, compared, "some layers are byte-identical between the two choruses");
+    }
+
+    /// The engine must not produce clips that its own analysis calls out as robotic.
+    #[test]
+    fn engine_never_trips_its_own_warnings() {
+        for style in ["pop", "lofi", "cinematic"] {
+            let s = song(style);
+            for t in &s.tracks {
+                for sec in &s.sections {
+                    let Some(clip) = s.clip(&t.id, &sec.id) else { continue };
+                    if clip.notes.is_empty() {
+                        continue;
+                    }
+                    let a = analyze_clip(&s, t.kind, sec, &clip.notes);
+                    for w in a.warnings.iter() {
+                        assert!(!w.contains("nearly uniform"), "{style}/{}/{}: {w}", t.id, sec.id);
+                    }
+                }
+            }
+        }
     }
 }

@@ -168,7 +168,7 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams,
     let key = session.key;
     let style = params.style(session).to_ascii_lowercase();
     let energy = ctx.effective_energy(params.energy(section));
-    let mut rng = params.rng(session, 21);
+    let mut rng = params.rng_in(session, 21, section, ctx);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let contour = params.contour.clone().unwrap_or_else(|| "arch".into());
@@ -351,12 +351,65 @@ pub fn generate_melody(session: &Session, section: &Section, params: &GenParams,
             notes[i].pitch += 12;
         }
     }
-    // Velocity shape: phrase peaks slightly louder, pickups softer.
-    for n in notes.iter_mut() {
-        let in_bar = n.start % bar;
-        n.vel = if in_bar == 0 { 0.85 } else if in_bar % PPQ == 0 { 0.78 } else { 0.7 };
+    // Dynamics. A singer leans on the downbeat, swells towards the middle of a phrase, pushes the
+    // high notes and eases off into the cadence — three fixed velocities read as a machine.
+    if !notes.is_empty() {
+        let phrase = bar * 4;
+        let lowest = notes.iter().map(|n| n.pitch).min().unwrap_or(60) as f32;
+        let highest = notes.iter().map(|n| n.pitch).max().unwrap_or(72) as f32;
+        let span = (highest - lowest).max(1.0);
+        // Map the shape into a window rather than adding to a base and clamping: at high energy
+        // everything used to saturate at 1.0, which is a flat line again.
+        let lo_vel = 0.42 + 0.22 * energy;
+        let hi_vel = 0.80 + 0.18 * energy;
+        let last_start = notes.last().map(|n| n.start).unwrap_or(0);
+        for n in notes.iter_mut() {
+            let in_bar = n.start % bar;
+            let metric = if in_bar == 0 {
+                1.0
+            } else if in_bar % PPQ == 0 {
+                0.65
+            } else if in_bar % (PPQ / 2) == 0 {
+                0.35
+            } else {
+                0.15
+            };
+            // Arch across the phrase, peaking about two thirds through.
+            let pos = (n.start % phrase) as f32 / phrase as f32;
+            let arch = (pos * std::f32::consts::PI * 0.85).sin();
+            let height = (n.pitch as f32 - lowest) / span;
+            let mut shape = 0.42 * metric + 0.33 * arch + 0.25 * height;
+            // Ease into the final note of the section, and soften a pickup into the next downbeat.
+            if n.start == last_start {
+                shape -= 0.18;
+            }
+            if in_bar >= bar - PPQ / 2 {
+                shape -= 0.12;
+            }
+            n.vel = (lo_vel + (hi_vel - lo_vel) * shape.clamp(0.0, 1.0)).clamp(0.2, 1.0);
+        }
     }
-    // Rest budget: ensure at least ~15% silence per phrase by shortening the longest note tails when needed.
+    // Rest budget: phrases need silence to breathe, so trim the longest tails until roughly a
+    // seventh of the section is rest.
+    {
+        let sounding: u32 = notes.iter().map(|n| n.len).sum();
+        let mut excess = sounding as i64 - (total as f32 * 0.85) as i64;
+        if excess > 0 {
+            let mut order: Vec<usize> = (0..notes.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(notes[i].len));
+            for i in order {
+                if excess <= 0 {
+                    break;
+                }
+                let floor = PPQ / 4;
+                let cut = ((notes[i].len as i64 - floor as i64).max(0) / 3).min(excess);
+                if cut > 0 {
+                    notes[i].len -= cut as u32;
+                    excess -= cut;
+                }
+            }
+        }
+    }
     clamp_to_section(&mut notes, total);
     notes.sort_by_key(|n| (n.start, n.pitch));
     notes

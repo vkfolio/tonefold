@@ -11,6 +11,7 @@ const USAGE: &str = "flvstx-cli <command> [args]
 
   demo [--style S] [--key K] [--bars N] [--seed N] [--out FILE.mid]   render a demo song
   render SESSION.json OUT.mid                                          render a saved session to MIDI
+  wav SESSION.json OUT.wav [--section ID] [--soundfont FILE.sf2]       bounce audio through the soundfont
   export SESSION.json [DIR]                                            write latest.json/.mid for the FL script
   op SESSION.json METHOD '{json params}'                               run one session operation and save
   describe SESSION.json                                                print the compact summary
@@ -58,6 +59,17 @@ fn main() -> Result<()> {
             if let Some(sp) = flag(&args, "--save") {
                 save(&sp, &session)?;
             }
+        }
+        "wav" => {
+            let session = load(args.get(1).context("SESSION.json")?)?;
+            let out = PathBuf::from(args.get(2).context("OUT.wav")?);
+            let section = flag(&args, "--section");
+            let sf_path = flag(&args, "--soundfont").map(PathBuf::from).unwrap_or_else(flvstx_core::render::default_soundfont_path);
+            let sf = flvstx_core::render::load_soundfont(&sf_path).map_err(anyhow::Error::msg)?;
+            let (l, r) = flvstx_core::render::render_stereo(&session, section.as_deref(), &[], &sf).map_err(anyhow::Error::msg)?;
+            let (peak, gain) = flvstx_core::render::peak_and_gain(&l, &r);
+            flvstx_core::render::write_wav(&out, &l, &r, gain).map_err(anyhow::Error::msg)?;
+            println!("wrote {} ({:.1}s, peak {:.2})", out.display(), l.len() as f32 / flvstx_core::render::SAMPLE_RATE as f32, peak);
         }
         "render" => {
             let session = load(args.get(1).context("SESSION.json")?)?;

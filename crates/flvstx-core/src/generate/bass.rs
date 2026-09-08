@@ -1,7 +1,7 @@
 //! Bass lines: pattern library selected by style and energy, following the chord roots (slash bass
 //! respected), with approach notes into chord changes and space where the melody is busy.
 
-use super::{clamp_to_section, GenParams, SongCtx};
+use super::{bar_roll, clamp_to_section, GenParams, SongCtx};
 use crate::model::{Note, Section, SectionRole, Session, TrackRole, PPQ};
 use rand::Rng;
 
@@ -65,7 +65,7 @@ fn root_in_register(pc: u8) -> u8 {
 pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, ctx: SongCtx) -> Vec<Note> {
     let style = params.style(session).to_ascii_lowercase();
     let energy = ctx.effective_energy(params.energy(section));
-    let mut rng = params.rng(session, 31);
+    let mut rng = params.rng_in(session, 31, section, ctx);
     let mut pattern = pick_pattern(&style, energy, params.pattern.as_deref(), &mut rng);
     if params.pattern.is_none() && matches!(ctx.role, SectionRole::Intro | SectionRole::Break | SectionRole::Outro) {
         pattern = Pattern::Root;
@@ -83,6 +83,7 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, c
     // Melody density per beat, to leave space when the melody is busy (call and response).
     let melody = session.notes_of_kind(TrackRole::Melody, &section.id);
     let beat_busy = |t: u32| melody.iter().filter(|n| n.start >= t && n.start < t + q).count() >= 2;
+    let stream = params.stream(session, 31, section, ctx);
 
     for (ci, ev) in section.chords.iter().enumerate() {
         let root = root_in_register(ev.chord.bass_pc());
@@ -91,6 +92,14 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, c
         match pattern {
             Pattern::Root => {
                 notes.push(Note::new(root, ev.start, ev.len - ev.len / 16, base_vel));
+                // A pickup into the next chord on some bars, so a held root does not sit dead.
+                let b = ev.start / bar;
+                if ev.len >= q * 2 && energy > 0.35 && bar_roll(stream, b, 0x524F) < 0.35 {
+                    if let Some(nr) = next_root {
+                        let approach = if nr > root { nr - 2 } else { nr + 2 };
+                        notes.push(Note::new(key.snap(approach), ev.start + ev.len - e, e - e / 4, base_vel - 0.12));
+                    }
+                }
             }
             Pattern::Pedal => {
                 let pedal = root_in_register(section.chords[0].chord.bass_pc());
@@ -118,7 +127,10 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, c
                 let mut t = ev.start;
                 let mut i = 0;
                 while t < ev.start + ev.len {
+                    let b = t / bar;
                     let p = if i % 2 == 0 { root } else { root + 12 };
+                    // Every other bar, answer the octave with the fifth instead.
+                    let p = if i % 2 == 1 && bar_roll(stream, b, 0x5045) < 0.4 { fifth.min(root + 7) } else { p };
                     notes.push(Note::new(p, t, e - e / 4, if i % 2 == 0 { base_vel } else { base_vel - 0.12 }));
                     t += e;
                     i += 1;
@@ -128,8 +140,16 @@ pub fn generate_bass(session: &Session, section: &Section, params: &GenParams, c
                 let mut t = ev.start;
                 let mut i = 0;
                 while t < ev.start + ev.len {
+                    let b = t / bar;
                     let accent = i % 2 == 0;
-                    notes.push(Note::new(root, t, e - e / 3, if accent { base_vel } else { base_vel - 0.15 }));
+                    // Leave a hole for the melody, and jump the octave once or twice a bar.
+                    let hole = !accent && beat_busy(t) && energy < 0.7 && bar_roll(stream, b * 16 + i, 0x5042) < 0.35;
+                    if !hole {
+                        let jump = !accent && bar_roll(stream, b * 16 + i, 0x5043) < 0.18;
+                        let p = if jump { root + 12 } else { root };
+                        let v = if accent { base_vel } else { base_vel - 0.15 };
+                        notes.push(Note::new(p, t, e - e / 3, v + (bar_roll(stream, b * 16 + i, 0x5044) - 0.5) * 0.08));
+                    }
                     t += e;
                     i += 1;
                 }

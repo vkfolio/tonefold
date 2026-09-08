@@ -1,7 +1,7 @@
 //! Drum patterns: backbeat grammar per style, hat subdivision by energy, ghost notes, open-hat
 //! accents, Euclidean percussion layers and fills at phrase boundaries.
 
-use super::{clamp_to_section, GenParams, SongCtx};
+use super::{bar_roll, clamp_to_section, GenParams, SongCtx};
 use crate::model::{Note, Section, SectionRole, Session, PPQ};
 use rand::Rng;
 
@@ -50,7 +50,6 @@ pub fn euclid(k: usize, n: usize, rotate: usize) -> Vec<bool> {
 struct Style {
     four_on_floor: bool,
     hats_16ths: bool,
-    swing_hats: bool,
     clap_layer: bool,
     trap_hats: bool,
     ride: bool,
@@ -68,7 +67,6 @@ fn style_of(s: &str, energy: f32) -> Style {
     Style {
         four_on_floor: four,
         hats_16ths: (four && energy > 0.5) || (lofi && energy > 0.6) || (!four && !lofi && !kids && energy > 0.7),
-        swing_hats: lofi,
         clap_layer: four || trap || (s.contains("pop") && energy > 0.6),
         trap_hats: trap,
         ride: s.contains("jazz") || (cine && energy > 0.6),
@@ -82,7 +80,7 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, 
     let style_str = params.style(session).to_ascii_lowercase();
     let energy = ctx.effective_energy(params.energy(section));
     let density = params.density.unwrap_or(energy);
-    let mut rng = params.rng(session, 41);
+    let mut rng = params.rng_in(session, 41, section, ctx);
     let st = style_of(&style_str, energy);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
@@ -116,11 +114,15 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, 
         v
     };
     let snare_beats: Vec<u32> = if st.half_time { vec![q * 2] } else if beats >= 4 { vec![q, q * 3] } else { vec![q] };
+    // Per-bar rolls come from a hash, not the RNG stream, so adding variation later cannot shift
+    // every draw that follows it.
+    let stream = params.stream(session, 41, section, ctx);
 
     for b in 0..section.bars {
         let bar_start = b * bar;
         let phrase_end = fills && (b + 1) % 4 == 0 && section.bars >= 4;
-        let kicks = if b % 2 == 1 { &kick_b } else { &kick_a };
+        // Anchor the odd bars of each pair and vary the even ones, so the groove stays recognisable.
+        let kicks = if b % 2 == 1 && bar_roll(stream, b, 0x4B49) > 0.25 { &kick_b } else { &kick_a };
 
         // Crash on the first downbeat of the section (when energetic) and after fills.
         if b == 0 && energy > 0.5 {
@@ -171,23 +173,39 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, 
                 t += e;
             }
         } else if st.hats_16ths {
+            // A hand does not repeat a bar exactly: the accent pattern shifts, one 16th drops out,
+            // and the odd one opens up. Velocities sit in the 60-90 band with ~20% accents.
+            let shape = (bar_roll(stream, b, 0x4841) * 3.0) as u32;
+            let drop_at = (bar_roll(stream, b, 0x4842) * 16.0) as u32;
             let mut t = 0;
-            let mut i = 0;
+            let mut i = 0u32;
             while t < bar {
-                let vel = match i % 4 {
-                    0 => 0.85,
-                    2 => 0.7,
-                    _ => 0.5,
+                let accented = match shape {
+                    0 => i % 4 == 0,
+                    1 => i % 4 == 0 || i % 8 == 6,
+                    _ => i % 2 == 0 && i % 8 != 4,
                 };
-                notes.push(Note::new(hat_pitch, bar_start + t, s16, vel));
+                let vel = if accented { 0.78 } else if i % 2 == 0 { 0.6 } else { 0.48 };
+                let skip = i == drop_at && i % 4 != 0 && bar_roll(stream, b, 0x4843) < 0.5;
+                if !skip {
+                    let jitter = (bar_roll(stream, b * 16 + i, 0x4844) - 0.5) * 0.08;
+                    notes.push(Note::new(hat_pitch, bar_start + t, s16, (vel + jitter).clamp(0.35, 0.95)));
+                }
                 t += s16;
                 i += 1;
             }
         } else if density > 0.15 {
+            let syncopate = bar_roll(stream, b, 0x4845) < 0.3;
             let mut t = 0;
-            let mut i = 0;
+            let mut i = 0u32;
             while t < bar {
-                notes.push(Note::new(hat_pitch, bar_start + t, e, if i % 2 == 0 { 0.8 } else { 0.6 }));
+                let vel = if i % 2 == 0 { 0.76 } else { 0.56 };
+                let jitter = (bar_roll(stream, b * 8 + i, 0x4846) - 0.5) * 0.08;
+                notes.push(Note::new(hat_pitch, bar_start + t, e, (vel + jitter).clamp(0.35, 0.95)));
+                // Now and then push an extra 16th before the backbeat.
+                if syncopate && i == 2 {
+                    notes.push(Note::new(hat_pitch, bar_start + t + s16, s16, 0.45));
+                }
                 t += e;
                 i += 1;
             }
@@ -217,19 +235,51 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, 
         }
         // Fill at the end of each 4-bar phrase: replace the last beat(s) with a tom/snare run.
         if phrase_end {
-            let fill_start = bar_start + (beats - 1) * q - if energy > 0.6 { q } else { 0 };
+            // The bar-4 and bar-8 fills used to be byte-identical. Pick a shape per phrase, and go
+            // bigger when a chorus or drop is coming.
+            let into_big = matches!(ctx.next_role, Some(SectionRole::Chorus) | Some(SectionRole::Drop));
+            let last_phrase = b + 1 >= section.bars;
+            let long = energy > 0.6 || (last_phrase && into_big);
+            let fill_start = bar_start + (beats - 1) * q - if long { q } else { 0 };
             notes.retain(|n| !(n.start >= fill_start && n.start < bar_start + bar && (n.pitch == SNARE || n.pitch == HAT || n.pitch == SHAKER)));
-            let drums = [SNARE, SNARE, TOM_HI, TOM_MID, TOM_LO, SNARE];
-            let mut t = fill_start;
-            let mut i = 0;
+            let shape = if last_phrase && into_big { 3 } else { (bar_roll(stream, b, 0x4649) * 3.0) as u32 };
             let step = if energy > 0.5 { s16 } else { e };
+            let mut t = fill_start;
+            let mut i = 0usize;
             while t < bar_start + bar {
-                let p = if energy > 0.5 { drums[i % drums.len()] } else { SNARE };
-                notes.push(Note::new(p, t, step, 0.6 + (i as f32 * 0.06).min(0.35)));
+                let frac = (t - fill_start) as f32 / (bar_start + bar - fill_start).max(1) as f32;
+                let p = match shape {
+                    // Snare 16ths, tightening.
+                    0 => SNARE,
+                    // Tom descent.
+                    1 => [SNARE, TOM_HI, TOM_HI, TOM_MID, TOM_MID, TOM_LO, TOM_LO, SNARE][i.min(7)],
+                    // Snare/tom alternation.
+                    2 => {
+                        if i % 2 == 0 {
+                            SNARE
+                        } else {
+                            [TOM_HI, TOM_MID, TOM_LO][(i / 2) % 3]
+                        }
+                    }
+                    // Anticipation: a rest, then a hard run into the downbeat.
+                    _ => {
+                        if frac < 0.35 {
+                            t += step;
+                            i += 1;
+                            continue;
+                        }
+                        if i % 3 == 0 {
+                            TOM_MID
+                        } else {
+                            SNARE
+                        }
+                    }
+                };
+                notes.push(Note::new(p, t, step, (0.55 + 0.4 * frac).min(1.0)));
                 t += step;
                 i += 1;
             }
-            if b + 1 < section.bars {
+            if b + 1 < section.bars || into_big {
                 notes.push(Note::new(CRASH, bar_start + bar, q, 0.95));
             }
         }
@@ -264,7 +314,6 @@ pub fn generate_drums(session: &Session, section: &Section, params: &GenParams, 
             }
         }
     }
-    let _ = st.swing_hats; // swing is applied by the humanizer preset
     clamp_to_section(&mut notes, total);
     notes.sort_by_key(|n| (n.start, n.pitch));
     notes.dedup_by(|a, b| a.start == b.start && a.pitch == b.pitch);

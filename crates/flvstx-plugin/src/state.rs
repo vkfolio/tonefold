@@ -3,24 +3,14 @@
 
 use arc_swap::ArcSwap;
 use flvstx_core::ops::Store;
-use flvstx_core::{Note, Session, PPQ};
+use flvstx_core::{Note, Session};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 #[allow(unused_imports)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
-/// One scheduled MIDI event in song ticks.
-#[derive(Debug, Clone, Copy)]
-pub struct Event {
-    pub tick: u32,
-    pub on: bool,
-    pub channel: u8,
-    /// Channel for the built-in synth (drums/percussion always go to the GM percussion channel 9).
-    pub synth_channel: u8,
-    pub pitch: u8,
-    pub vel: f32,
-}
+pub use flvstx_core::playback::Event;
 
 /// Pre-rendered, sorted event list. Replaced atomically whenever the session changes.
 #[derive(Debug, Default)]
@@ -35,37 +25,8 @@ pub struct PlaybackBuffer {
 
 impl PlaybackBuffer {
     pub fn build(session: &Session, loop_section: Option<&str>, muted: &[String]) -> PlaybackBuffer {
-        let mut events = Vec::new();
-        let bar = session.bar_ticks();
-        let (loop_start, loop_end) = match loop_section.and_then(|id| session.section(id).map(|s| (session.section_start(&s.id).unwrap_or(0), s.bars * bar))) {
-            Some((start, len)) => (start, start + len),
-            None => (0, session.total_ticks().max(bar)),
-        };
-        for t in &session.tracks {
-            if muted.contains(&t.id) || t.muted {
-                continue;
-            }
-            let ch = t.channel;
-            let sch = if t.kind.is_pitched() { if ch == 9 { 15 } else { ch } } else { 9 };
-            for n in session.flatten(&t.id) {
-                if n.start >= loop_end || n.end() <= loop_start {
-                    continue;
-                }
-                events.push(Event { tick: n.start, on: true, channel: ch, synth_channel: sch, pitch: n.pitch, vel: n.vel });
-                events.push(Event { tick: n.end().min(loop_end.saturating_sub(1)).max(n.start + 1), on: false, channel: ch, synth_channel: sch, pitch: n.pitch, vel: 0.0 });
-            }
-        }
-        // Note-offs before note-ons at the same tick so retriggers work.
-        events.sort_by_key(|e| (e.tick, e.on));
-        let mut programs = [0u8; 16];
-        programs[9] = flvstx_core::gm::DRUM_KIT;
-        for t in &session.tracks {
-            let sch = if t.kind.is_pitched() { if t.channel == 9 { 15 } else { t.channel } } else { 9 };
-            if t.kind.is_pitched() {
-                programs[sch as usize] = t.program(&session.style);
-            }
-        }
-        PlaybackBuffer { events, loop_start, loop_end, tempo: session.tempo, programs }
+        let tl = flvstx_core::playback::timeline(session, loop_section, muted);
+        PlaybackBuffer { events: tl.events, loop_start: tl.loop_start, loop_end: tl.loop_end, tempo: tl.tempo, programs: tl.programs }
     }
 }
 
@@ -333,5 +294,5 @@ impl Shared {
 }
 
 pub fn ticks_per_sample(tempo: f32, sample_rate: f32) -> f64 {
-    (tempo as f64 / 60.0) * PPQ as f64 / sample_rate as f64
+    flvstx_core::playback::ticks_per_sample(tempo, sample_rate)
 }

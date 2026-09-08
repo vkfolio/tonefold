@@ -18,7 +18,7 @@ standalone = ["nih_plug/standalone"]
 [dependencies]
 nih_plug.workspace = true
 nih_plug_egui.workspace = true
-flvstx-core = { path = "../flvstx-core" }
+flvstx-core = { path = "../flvstx-core", features = ["render"] }
 flvstx-ipc = { path = "../flvstx-ipc" }
 arc-swap.workspace = true
 serde.workspace = true

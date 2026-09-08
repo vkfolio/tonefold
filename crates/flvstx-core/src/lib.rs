@@ -9,6 +9,9 @@ pub mod midi;
 pub mod model;
 pub mod notation;
 pub mod ops;
+pub mod playback;
+#[cfg(feature = "render")]
+pub mod render;
 pub mod theory;
 pub mod voicing;
 

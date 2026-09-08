@@ -395,11 +395,14 @@ pub struct Track {
     /// General MIDI program for the built-in synth (128 = drum kit). None = default for the kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrument: Option<u8>,
+    /// Groove template for this layer ("none" to play straight). None = the song's, else the style's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove: Option<String>,
 }
 
 impl Track {
     pub fn new(id: impl Into<String>, name: impl Into<String>, kind: TrackRole, channel: u8) -> Self {
-        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new(), instrument: None }
+        Track { id: id.into(), name: name.into(), kind, channel, clips: BTreeMap::new(), locked: false, muted: false, inactive: BTreeSet::new(), instrument: None, groove: None }
     }
     pub fn active_in(&self, section_id: &str) -> bool {
         !self.inactive.contains(section_id)
@@ -443,6 +446,9 @@ pub struct Session {
     pub style: String,
     #[serde(default)]
     pub seed: u64,
+    /// Groove template for the whole song ("none" to play straight). None = pick from the style.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groove: Option<String>,
 }
 
 impl Default for Session {
@@ -455,6 +461,7 @@ impl Default for Session {
             tracks: TrackRole::DEFAULT.iter().map(|&k| Track::new(k.name(), k.label(), k, k.default_channel())).collect(),
             style: "pop".into(),
             seed: 1,
+            groove: None,
         }
     }
 }

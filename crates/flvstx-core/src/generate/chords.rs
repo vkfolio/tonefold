@@ -101,7 +101,7 @@ pub fn render_chords(session: &Session, section: &Section, params: &GenParams, c
     // Intros/breaks/outros: hold chords; choruses: fuller voicings.
     let held = matches!(ctx.role, SectionRole::Intro | SectionRole::Break | SectionRole::Outro);
     let big = matches!(ctx.role, SectionRole::Chorus | SectionRole::Drop);
-    let mut rng = params.rng(session, 11);
+    let mut rng = params.rng_in(session, 11, section, ctx);
     let bar = session.bar_ticks();
     let total = section.bars * bar;
     let kids = style.contains("kid") || style.contains("nursery") || style.contains("rhyme");

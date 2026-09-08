@@ -1411,6 +1411,7 @@ dependencies = [
  "midly",
  "rand 0.9.5",
  "rand_chacha",
+ "rustysynth",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

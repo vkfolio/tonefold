@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-flvstx-core = { path = "../flvstx-core" }
+flvstx-core = { path = "../flvstx-core", features = ["render"] }
 flvstx-ipc = { path = "../flvstx-ipc" }
 serde_json.workspace = true
 anyhow.workspace = true
