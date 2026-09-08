@@ -8,6 +8,7 @@
 pub mod dragout;
 pub mod editor;
 pub mod state;
+pub mod wav;
 
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;

@@ -1055,6 +1055,50 @@ fn ask_export_dir(section: Option<String>) {
     });
 }
 
+/// Asks for a .wav destination, then renders the built-in sounds into it. Both run on a worker
+/// thread: the dialog must not re-enter the GUI, and a long song takes a moment to render.
+fn ask_export_wav(section: Option<String>) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("export: dialog already open");
+        return;
+    }
+    let start = last_export_dir();
+    let name = format!("{}.wav", section.clone().unwrap_or_else(|| "song".into()));
+    dbg_log(&format!("export: opening wav dialog at {}", start.display()));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Export audio")
+            .set_directory(&start)
+            .set_file_name(&name)
+            .add_filter("WAV audio", &["wav"]);
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = dialog.save_file();
+        dbg_log(&format!("export: wav dialog returned {:?}", picked));
+        EXPORT_PICKING.store(false, Ordering::Release);
+        let Some(file) = picked else { return };
+        let shared = crate::state::global_shared();
+        shared.push_chat(ChatRole::System, format!("rendering {}…", file.display()));
+        match crate::wav::render_to_file(&shared, section.as_deref(), &file) {
+            Ok((seconds, peak)) => {
+                if let Some(dir) = file.parent() {
+                    if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
+                        *d = Some(dir.to_path_buf());
+                    }
+                }
+                let limited = if peak > 0.99 { format!(", turned down {:.1} dB to fit", 20.0 * (0.99 / peak).log10()) } else { String::new() };
+                shared.push_chat(ChatRole::System, format!("wrote {} ({seconds:.1}s{limited})", file.display()));
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("render failed: {e}")),
+        }
+    });
+}
+
 /// Runs a pending export once the dialog thread has produced a folder.
 fn poll_export(shared: &Shared) {
     let Some((dir, section)) = EXPORT_PICK.lock().ok().and_then(|mut p| p.take()) else { return };
@@ -1135,11 +1179,15 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         }
         ui.separator();
         let sec = ui_state.selected_section.clone();
+        let sec_wav = sec.clone();
         if ui.button("Export section…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for this section").clicked() {
             ask_export_dir(sec);
         }
         if ui.button("Export song…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer for the whole song").clicked() {
             ask_export_dir(None);
+        }
+        if ui.button("Export WAV…").on_hover_text("Renders the built-in sounds to a stereo .wav file (selected section, or the whole song if none is selected)").clicked() {
+            ask_export_wav(sec_wav);
         }
         if ui.button("Open folder").on_hover_text("Opens the folder of the last export").clicked() {
             let dir = last_export_dir();

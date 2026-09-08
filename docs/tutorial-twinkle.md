@@ -174,6 +174,7 @@ Once imported, the notes are ordinary FL notes on your instruments; untick **Bui
 | Fill everything | *Generate section* or *Generate song* |
 | Undo anything | *Undo* in the bottom bar |
 | Get notes into FL | *Export section…/song…* (pick a folder) then piano roll *Tools > Scripts > FLVSTX Import* |
+| Send someone the song | *Export WAV…* — renders the built-in sounds to a `.wav` |
 | Hear the song inside FLVSTX | *Play* (loops the section, or the song with *Loop section* off) |
 | Follow FL's transport | tick *Sync to host* |
 

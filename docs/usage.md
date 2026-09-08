@@ -71,6 +71,11 @@ puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
    - drag a `.mid` file from the export folder (**Open folder** reopens the last one) onto a Channel Rack slot,
    - or drag a layer's **⇗** handle in the Layers panel straight onto an FL channel or its piano roll.
 
+**Export WAV…** renders the built-in sounds offline to a stereo 16-bit 44.1 kHz `.wav` — the selected
+section, or the whole song when no section is selected. Muted layers stay out, and the render is turned
+down rather than clipped if the mix goes over. Use it to send a take to someone, or to check an idea
+without a DAW.
+
 The session, chat history and composer session id are saved inside the FL project.
 
 ## Command line
