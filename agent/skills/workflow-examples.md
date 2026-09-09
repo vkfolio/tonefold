@@ -28,4 +28,18 @@ Example turns (tool calls abbreviated).
 1. `set_key_tempo` key "A minor". Chords written as roman numerals re-resolve when re-set; chords written as symbols do not, so re-issue `set_chords` for each section with the relative-minor progression (e.g. `| Am | F | C | G |`) and `generate_all` again, keeping locked tracks.
 
 **"The melody you wrote clashes in bar 3"**
-1. `get_notes` melody section → look at bar 3 against the chord there. Rewrite only that bar by `set_notes` for the whole clip with the fixed bar (keep everything else identical), or `generate` with a motif that fits. Explain the fix in one line (e.g. "bar 3 now lands on the 3rd of F instead of the 4th").
+1. `get_notes` melody section → look at bar 3 against the chord there. Rewrite just that bar with `set_notes` and `from_bar: 3` (the rest of the clip, and its humanization, stay), or `generate` with a motif that fits. Explain the fix in one line (e.g. "bar 3 now lands on the 3rd of F instead of the 4th").
+
+**"The second chorus is a copy of the first"**
+1. `copy_section` duplicates verbatim — that is what it is for. Follow it with `vary` on the new section (`amount` 0.4 subtle, 0.7 clearly different) so it is the same music played again rather than the same file twice.
+2. For a final chorus, also raise its energy with `set_section`, or add a layer that has not played yet (`add_layer` + `generate`) — a last chorus usually gains something rather than only being louder.
+
+**"Make it sit in the pocket / it feels stiff"**
+1. `set_groove` first: the template is the systematic part (`boom_bap` for a dragged hip-hop backbeat, `swing_16` for MPC 16ths, `tresillo` for 3+3+2, `house`, `jazz_swing`, `none` to play dead straight).
+2. Then `humanize` for the random part: `timing_ms` is a real millisecond spread, `snare_pocket_ms` places the backbeat (+12 lays it back, −5 pushes it), `pocket_ms` moves a whole layer.
+3. For one deliberate push, write it into the notes: `@t-15` on that note in `set_notes` rather than loosening the whole part.
+
+**"Write me an amapiano track"** (a genre you cannot write idiomatically from memory)
+1. `read_reference` `references/genres/afrobeats-and-amapiano.md` — tempo, log-drum bass, the way the percussion is layered.
+2. `set_key_tempo` with the tempo and style it describes, `set_form`, then the layers it names (`add_layer` percussion and pad, not just the four defaults).
+3. Reply with what you took from the reference, not a list of tool calls.

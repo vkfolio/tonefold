@@ -81,6 +81,28 @@ entirely, every stem is rendered at the mix's gain so the stems add back up to t
 turned down rather than clipped if it goes over. Use it to send a take to someone, to check an idea
 without a DAW, or to drop the stems into a DAW as audio.
 
+### How it is made to sound played
+
+Generation is seeded from the section and its occurrence, so a repeated chorus is a new performance
+rather than a copy of the first. Each layer is then placed by a **groove template** (the systematic
+way a style leans on the grid — `straight_pop`, `swing_16`, `boom_bap`, `house`, `jazz_swing`,
+`tresillo`, or `none`) and a per-layer random walk whose `timing_ms` is a real millisecond spread.
+Drums sit in a pocket: the kick a little behind, hats ahead, and the backbeat placed by style.
+Sustained parts also carry controller lanes — CC11 swells, sustain pedal at chord changes,
+pitch-bend glides on 808 basses — which play through the built-in sounds, ride along in exported
+MIDI, and follow a layer dragged into FL Studio.
+
+Ask the composer for "the same but different" (it calls `vary`), a feel (`set_groove`), or a
+deliberate push on one note (`@t-15` in its notation).
+
+### The composer's reference library
+
+`agent/reference/` holds a vendored composition library — harmony, motif development, phrase
+structure, groove, form, orchestration, instrument idiom and 24+ genres. The composer reads from it
+on demand through its `read_reference` tool, guided by an index in its prompt, so an unfamiliar
+genre comes from a reference rather than from memory. Based on "Music Composition Agent Skill" by
+SJY051, licensed under CC BY 4.0 — see `agent/reference/NOTICE.md`.
+
 **Song…** (top bar) keeps songs as files: **New**, **Open…**, **Save**, **Save as…**. A `.flvstx` file
 holds the whole session — sections, layers, notes, chat and the composer session — so you can come back
 to a song later or keep several going.

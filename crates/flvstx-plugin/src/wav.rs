@@ -110,4 +110,28 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Controllers have to reach the synth before the notes they shape: a pedal pressed after the
+    /// chord it holds does nothing, and a bend applied late bends the wrong note.
+    #[test]
+    fn controllers_precede_notes_at_the_same_tick() {
+        use flvstx_core::model::{AutoPoint, AutoTarget, Automation, Curve};
+        use flvstx_core::playback::EventKind;
+
+        let mut session = Session::default();
+        session.sections.push(flvstx_core::Section::new("verse", "Verse", 1, 0.5));
+        let section = session.sections[0].id.clone();
+        let id = session.tracks[0].id.clone();
+        let clip = Clip::with_automation(
+            vec![Note::new(60, 0, PPQ, 0.9)],
+            flvstx_core::ClipSource::Edited,
+            vec![Automation::new(AutoTarget::Sustain, vec![AutoPoint { tick: 0, value: 1.0, curve: Curve::Step }])],
+        );
+        session.track_by_mut(&id).unwrap().clips.insert(section.clone(), clip);
+
+        let buf = crate::state::PlaybackBuffer::build(&session, Some(&section), &[]);
+        let first = buf.events.first().expect("events");
+        assert!(matches!(first.kind, EventKind::Cc { cc: 64, .. }), "expected the pedal first, got {:?}", first.kind);
+        assert!(buf.events.iter().any(|e| matches!(e.kind, EventKind::NoteOn { .. })));
+    }
 }

@@ -8,7 +8,7 @@
 use crate::analyze::analyze_clip;
 use crate::generate::{chords::suggest_progressions, generate_section, generate_song, generate_track, GenParams};
 use crate::humanize::{humanize, HumanizeParams};
-use crate::model::{Clip, ClipSource, SectionRole, Session, TrackRole};
+use crate::model::{Clip, ClipSource, SectionRole, Session, TrackRole, PPQ};
 use crate::notation::{format_chords, format_drums, format_melody, parse_chords, parse_drums, parse_melody};
 use crate::theory::{Key, ScaleKind};
 use crate::{Error, Result};
@@ -319,6 +319,26 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             })?;
             Ok(json!({ "ok": true, "track": tid, "instrument": crate::gm::program_name(program) }))
         }
+        "set_groove" => {
+            let groove: String = arg(params, "groove")?;
+            let known = ["straight_pop", "swing_16", "boom_bap", "house", "jazz_swing", "tresillo", "none"];
+            if !known.contains(&groove.as_str()) {
+                return Err(Error::Parse(format!("unknown groove '{groove}' (one of {})", known.join(", "))));
+            }
+            let track: Option<String> = opt(params, "track")?;
+            let tid = match &track {
+                Some(_) => Some(track_id(&store.session, params)?),
+                None => None,
+            };
+            store.mutate(|s| {
+                match &tid {
+                    Some(id) => s.track_by_mut(id).unwrap().groove = Some(groove.clone()),
+                    None => s.groove = Some(groove.clone()),
+                }
+                Ok(())
+            })?;
+            Ok(json!({ "ok": true, "groove": groove, "track": tid, "hint": "regenerate or humanize the affected layers to hear it" }))
+        }
         "list_instruments" => Ok(json!({ "instruments": crate::gm::GM_PROGRAMS.iter().enumerate().map(|(i, n)| format!("{i}: {n}")).collect::<Vec<_>>(), "drums": "128: Drum Kit" })),
         "list_layer_kinds" => Ok(json!({ "kinds": TrackRole::ALL.iter().map(|k| json!({ "kind": k.name(), "description": k.description() })).collect::<Vec<_>>() })),
         "set_arrangement" => {
@@ -396,10 +416,19 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
             let section: String = arg(params, "section")?;
             let notation: String = arg(params, "notation")?;
             let do_humanize: Option<bool> = opt(params, "humanize")?;
+            let from_bar: Option<u32> = opt(params, "from_bar")?;
+            let to_bar: Option<u32> = opt(params, "to_bar")?;
             let sess = store.session.clone();
             let sec = sess.section(&section).cloned().ok_or_else(|| Error::UnknownSection(section.clone()))?;
             let kind = sess.track_by(&tid).unwrap().kind;
             let mut notes = if kind.is_pitched() { parse_melody(&notation, 0.8)? } else { parse_drums(&notation)? };
+            // A nudge is written in ms; only here do we know the tempo it is against.
+            for n in notes.iter_mut() {
+                if let Some(ms) = n.nudge_ms.take() {
+                    let ticks = ms * (sess.tempo * PPQ as f32) / 60_000.0;
+                    n.start = (n.start as f32 + ticks).max(0.0).round() as u32;
+                }
+            }
             let total = sec.bars * sess.bar_ticks();
             let overflow = notes.iter().filter(|n| n.start >= total).count();
             notes.retain(|n| n.start < total);
@@ -410,6 +439,25 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                 let mut hp = HumanizeParams::preset(kind.humanize_base(), &sess.style);
                 hp.seed = sess.seed;
                 humanize(&mut notes, &hp, kind.humanize_base(), sess.tempo, sess.bar_ticks());
+            }
+            // A bar range rewrites just those bars, so fixing bar 3 does not mean resending the
+            // whole clip (and losing its humanization).
+            if let Some(from) = from_bar {
+                let bar = sess.bar_ticks();
+                let start = (from.saturating_sub(1)) * bar;
+                let end = (to_bar.unwrap_or(from) * bar).min(total);
+                if start >= end {
+                    return Err(Error::Parse(format!("from_bar {from} is not before to_bar {}", to_bar.unwrap_or(from))));
+                }
+                let mut merged: Vec<crate::Note> = sess.clip(&tid, &sec.id).map(|c| c.notes.clone()).unwrap_or_default();
+                merged.retain(|n| n.start < start || n.start >= end);
+                for n in notes.iter_mut() {
+                    n.start += start;
+                }
+                notes.retain(|n| n.start < end);
+                merged.extend(notes.iter().cloned());
+                merged.sort_by_key(|n| (n.start, n.pitch));
+                notes = merged;
             }
             let (analysis, _) = clip_report(&sess, &tid, &sec.id, &notes);
             store.mutate(|s| {
@@ -524,6 +572,33 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                 Ok(())
             })?;
             Ok(json!({ "ok": true, "summary": describe(&store.session) }))
+        }
+        "vary" => {
+            // Regenerate a section as a variation of itself: same harmony and (for melody) the same
+            // motif, a different performance. What `copy_section` should be followed by.
+            let section: String = arg(params, "section")?;
+            let track: Option<String> = opt(params, "track")?;
+            let amount: f32 = opt::<f64>(params, "amount")?.unwrap_or(0.5) as f32;
+            let sec_id = store.session.section(&section).map(|s| s.id.clone()).ok_or_else(|| Error::UnknownSection(section.clone()))?;
+            let base_seed: u64 = opt(params, "seed")?.unwrap_or_else(|| store.session.seed.wrapping_add((amount * 1000.0) as u64).wrapping_mul(2_654_435_761));
+            let ids: Vec<String> = match &track {
+                Some(t) => vec![track_id(&store.session, params).map_err(|_| Error::UnknownTrack(t.clone()))?],
+                None => store.session.tracks.iter().filter(|t| !t.locked && t.active_in(&sec_id) && t.clips.contains_key(&sec_id)).map(|t| t.id.clone()).collect(),
+            };
+            let mut done = Vec::new();
+            for id in ids {
+                let mut gp = GenParams { seed: Some(base_seed.wrapping_add(crate::generate::hash_str(&id))), ..Default::default() };
+                // Keep the melody recognisable: develop the motif this section already has.
+                if store.session.track_by(&id).map(|t| t.kind) == Some(TrackRole::Melody) {
+                    gp.from_section = Some(sec_id.clone());
+                }
+                let sec = sec_id.clone();
+                let id2 = id.clone();
+                if store.mutate(|s| generate_track(s, &id2, &sec, &gp).map(|_| ())).is_ok() {
+                    done.push(id);
+                }
+            }
+            Ok(json!({ "ok": true, "section": sec_id, "varied": done, "summary": describe(&store.session) }))
         }
         "copy_section" => {
             let from: String = arg(params, "from")?;

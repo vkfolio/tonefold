@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn smf_roundtrip() {
-        let notes = vec![Note::new(60, 0, PPQ, 0.8), Note::new(64, PPQ, PPQ / 2, 0.5), Note { pitch: 67, start: PPQ * 2, len: PPQ, vel: 1.0, lyric: Some("la".into()), slide: None }];
+        let notes = vec![Note::new(60, 0, PPQ, 0.8), Note::new(64, PPQ, PPQ / 2, 0.5), Note { pitch: 67, start: PPQ * 2, len: PPQ, vel: 1.0, lyric: Some("la".into()), slide: None, nudge_ms: None }];
         let bytes = smf_bytes(120.0, (4, 4), &[MidiTrack::new("melody", 1, &notes)]).unwrap();
         let back = read_smf(&bytes).unwrap();
         assert_eq!(back.tempo.map(|t| t.round()), Some(120.0));

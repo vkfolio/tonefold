@@ -6,7 +6,8 @@
 //! * Melody / bass: whitespace-separated tokens `E4:8 F4:8 G4:4 r:8 G4:4. C5:2~ C5:4`
 //!   — `pitch:denominator` (4 = quarter, 8 = eighth, 16, 2, 1; a trailing `.` dots the note,
 //!   `t` makes a triplet), `r:` is a rest, `~` ties into the next note of the same pitch,
-//!   `@v80` after a token sets velocity (0..127), `/syl-la-ble` attaches a lyric.
+//!   `@v80` after a token sets velocity (0..127), `@t+12` / `@t-8` places it that many milliseconds
+//!   late or early against the grid, `/syl-la-ble` attaches a lyric.
 //!   `|` bar lines are optional and ignored (but validated against bar length when present).
 //! * Drums: one lane per line, `K: x---x---x---x---` with lane names K/S/H/OH/CL/T1/T2/T3/RD/CR/P
 //!   (kick, snare, closed hat, open hat, clap, toms, ride, crash, percussion). One step = a 16th
@@ -125,7 +126,11 @@ pub fn parse_melody(text: &str, default_vel: f32) -> Result<Vec<Note>> {
             Some((a, l)) => (a, Some(l.to_string())),
             None => (t, None),
         };
-        // Split off velocity.
+        // Split off a timing nudge in ms (@t+12 late, @t-8 early), then velocity.
+        let (t, nudge) = match t.split_once("@t") {
+            Some((a, v)) => (a, v.trim_start_matches('+').parse::<f32>().ok()),
+            None => (t, None),
+        };
         let (t, vel) = match t.split_once("@v") {
             Some((a, v)) => (a, v.parse::<f32>().map(|x| x / 127.0).ok()),
             None => (t, None),
@@ -173,6 +178,7 @@ pub fn parse_melody(text: &str, default_vel: f32) -> Result<Vec<Note>> {
         }
         let mut n = Note::new(pitch, cursor, len, vel.unwrap_or(default_vel));
         n.lyric = lyric;
+        n.nudge_ms = nudge;
         notes.push(n);
         if tie {
             pending_tie = Some(notes.len() - 1);

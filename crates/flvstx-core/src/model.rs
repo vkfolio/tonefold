@@ -198,6 +198,10 @@ pub struct Note {
     /// into the clip's pitch-bend lane, which is what playback and export actually read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slide: Option<Slide>,
+    /// Deliberate placement against the grid in milliseconds (negative = early). Applied when the
+    /// clip is written, since only then is the tempo known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nudge_ms: Option<f32>,
 }
 
 /// A pitch glide into a note.
@@ -211,7 +215,7 @@ pub struct Slide {
 
 impl Note {
     pub fn new(pitch: u8, start: u32, len: u32, vel: f32) -> Self {
-        Note { pitch, start, len, vel, lyric: None, slide: None }
+        Note { pitch, start, len, vel, lyric: None, slide: None, nudge_ms: None }
     }
     pub fn end(&self) -> u32 {
         self.start + self.len

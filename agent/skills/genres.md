@@ -1,23 +1,30 @@
-Style cheat-sheet: tempo, harmony, rhythm, and generator params that fit. Pass the style word to `set_key_tempo` (style) so the engine picks matching grooves and humanization.
+What the FLVSTX engine does with a style word, so you can pick the generator params. Pass the style
+to `set_key_tempo`; the substrings below are what it actually matches.
 
-**Pop** (100-125 BPM). Diatonic loops: I-V-vi-IV, vi-IV-I-V, I-vi-IV-V. Verse 8 bars, pre-chorus 4, chorus 8. Melody: short repeated cells with a lifted chorus (start the chorus motif a 3rd or 4th higher, longer notes on the title line). Bass: root with pushes (pattern `push`) in verses, `pulse` 8ths in choruses. Drums: backbeat, 8th hats in verses, 16ths or open hats in choruses, fill every 8 bars.
+For the *music* — how a genre is written, what its harmony and groove really are, what a producer in
+that scene would expect — read the genre file from the reference library instead of guessing
+(`references/genres/…`, listed in the index). This table is only the engine's side.
 
-**EDM / House / Dance** (120-128 BPM, techno 128-135). Minor keys common (A minor, F minor). Progressions: i-VI-III-VII, vi-IV-I-V, four chords looped for 8 bars. Chords: off-beat stabs at high energy, pads at low energy. Bass: `octave` or `pulse` (energy > 0.5). Drums: four-on-the-floor, open hat on every "and", claps layered with the snare, 16th hats when energy > 0.5. Arrangement: intro (drums thin) / build (energy 0.6, rising) / drop (energy 0.9-1.0, 16 bars) / break (energy 0.3) / drop. Timing tight: `humanize` with timing_ms 3, swing 0.5-0.55.
+| style word | tempo | feel the engine picks | bass `pattern` | drums |
+|---|---|---|---|---|
+| `pop` (default) | 100-125 | `straight_pop`, swing 0.52, snare −3 ms | `push` verses, `pulse` choruses | backbeat, 8th hats, fill every 4 bars |
+| `house` `edm` `techno` `dance` `trance` | 120-135 | `house`, timing ×0.5, swing 0.55 (house) | `pulse` / `octave` | four-on-the-floor, open hat on the "and" |
+| `lofi` `lo-fi` `boom` | 70-95 | `boom_bap`, swing 0.60, snare +12 ms | `push` / `root5` | swung 16th hats, ghost snares |
+| `hip` `r&b` `rnb` `neo-soul` `soul` | 65-95 | `boom_bap`, swing 0.58, snare +14 ms | `walking`-ish / `push` | dragged backbeat, ghosts |
+| `trap` `drill` | 130-150 (half-time) | `swing_16`, swing 0.54, snare +8 ms | `808` (slides are generated) | half-time snare, rolling hats |
+| `jazz` `swing` `bebop` | 60-200 | `jazz_swing`, 8th swing 0.66 | `walking` | ride pattern, brushed backbeat |
+| `cinema` `orchestra` `ambient` `epic` | 60-100 | no groove, timing ×1.6, deep phrase arc | `root` / `pedal` | sparse or none; builds get a snare roll |
+| `latin` `reggaeton` `salsa` `bossa` `afro` | 90-130 | `tresillo` (3+3+2 accents) | `root5` / `push` | percussion layers earn their place here |
+| `rock` `metal` `punk` `country` `folk` | 90-160 | `straight_pop`, straight 8ths, snare −5 ms | `root5` / `octave` | backbeat, crash on section starts |
+| `kid` `nursery` `rhyme` `lullab` | 95-115 (or 6/8 at 60-70) | tight, no groove, strong accents | `root` / `root5` | shaker, soft kick and clap |
 
-**Hip-hop / Boom-bap** (85-95 BPM). Sample-like 2- or 4-chord loops with 7ths (i7-iv7, ii7-V7-Imaj7). Bass: `push` or `root5`, sits with the kick. Drums: swung 16th hats (swing 0.58-0.62), kick patterns with a syncopated second kick, snare on 2 and 4 with ghosts, laid-back pocket (pocket_ms -4 to -6 on drums and bass).
+Anything else falls back to the pop feel — which is a real feel, not dead straight.
 
-**Trap / Drill** (130-150 BPM, half-time feel). Dark minor keys (C# minor, F minor, harmonic minor for drill). Sparse chords (pads or plucks holding), i-VI-VII-i or i-iv-VI-V. Bass: `808` (long sustained 808s with slides implied by octave drops). Drums: half-time snare on 3, rolling hats with 32nd bursts, occasional open hat. Melody: simple 4-note bell/pluck motif repeated with small variations; leave lots of space.
-
-**Lo-fi** (70-90 BPM). Jazzy extended chords: Imaj7-vi7-ii7-V7, IVmaj7-iii7-vi7-ii7, borrow iv or bVII. Chord voicings close, played as held chords with a soft re-strike. Melody: short, lazy, pentatonic-ish phrases with rests; motif of 3-5 notes. Bass: `root5` or `push`, warm and simple. Drums: swing 0.6, soft velocities, ghosts, rim instead of snare when quiet, timing_ms 10-14 for a wobbly feel.
-
-**R&B / Neo-soul** (65-95 BPM). Extended chords with 9ths and 13ths, ii-V movements, chromatic approach chords. Melody with passing tones and syncopation. Bass: `walking`-flavoured or `push`. Drums: swung, laid back.
-
-**Cinematic / Orchestral / Ambient** (60-100 BPM). Modal colours: i-VI-III-VII (epic), I-bVII-IV-I (heroic), Lydian for wonder (I-II), Dorian for mystery. Chords: pads (energy < 0.5) or 4-voice sustained voicings with add9/sus2 colours, strummed slightly. Melody: long notes, arch contour, wider intervals allowed (5ths, octaves), phrases of 4 bars; use `contour: "arch"` or `"rise"`. Bass: `root` (whole notes) or `pedal` under changing chords for tension. Drums: sparse; toms and crashes only at phrase boundaries, low energy sections without drums (`clear` drums). Humanize loose: timing_ms 12-16, phrase_arc 0.6.
-
-**Jazz** (swing 120-200, ballad 60-80). ii-V-I chains, secondary dominants (V/V), tritone subs. Bass: `walking`. Drums: ride pattern, swing 0.66. Melody: chord-tone arpeggios plus chromatic approach notes, syncopated.
-
-**Folk / Acoustic** (90-120). I-IV-V, I-V-vi-IV, 3/4 or 6/8 options. Chords strummed on beats. Bass: `root5` (alternating bass). Drums: shaker and light kick, or none.
-
-**Kids / Nursery rhymes** (95-115 BPM, sometimes 6/8 at 60-70). See the kids skill. Major keys (C, D, F, G), I-IV-V-I and I-V-I, plain triads. Melody within an octave, stepwise, repetitive, one syllable per note, clear cadences. Bass: `root` or `root5`. Drums: light (shaker, kick, soft snare or clap), no ghost notes, fills simple.
-
-**Time signatures.** 3/4 waltz (kids, folk, cinematic), 6/8 (lullabies, folk, Irish), 5/4 for character. Set with `set_key_tempo` time_signature; drum patterns adapt to the beat count.
+Notes that matter in practice:
+- **Layers.** Only chords/melody/bass/drums exist by default. `add_layer` for pad, arpeggio, pluck,
+  counter_melody, harmony, sub, percussion — a thin, same-y arrangement is usually a missing layer,
+  not a weak part. `references/orchestration/arrangement-density.md` if you want the reasoning.
+- **Time signatures.** 3/4 waltz (kids, folk, cinematic), 6/8 (lullabies, folk, Irish), 5/4 for
+  character. Set with `set_key_tempo` (time_signature).
+- **Instrument.** `set_instrument` per layer picks the built-in General MIDI sound the user hears;
+  it does not change what is written.

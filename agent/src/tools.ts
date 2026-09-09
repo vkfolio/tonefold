@@ -1,7 +1,10 @@
 // Composer tools exposed to Claude. Every tool is a thin RPC into the plugin's session (Rust ops).
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import type { Rpc } from "./protocol.js";
+import { AGENT_ROOT } from "./prompt.js";
 
 const TRACK = z.string().describe("layer id (e.g. 'melody', 'arp2'), layer name, or kind name (first layer of that kind)");
 const KIND = z.enum(["chords", "pad", "arpeggio", "pluck", "melody", "counter_melody", "harmony", "bass", "sub", "drums", "percussion"]);
@@ -44,8 +47,91 @@ export const TOOL_NAMES = [
   "get_session", "get_notes", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords",
   "suggest_chords", "harmonize", "set_notes", "generate", "generate_all", "generate_song", "humanize", "analyze", "set_lyrics", "lock",
   "clear", "transpose", "undo", "export", "add_layer", "remove_layer", "set_arrangement", "list_layer_kinds",
-  "set_instrument",
+  "set_instrument", "read_reference", "vary", "list_instruments", "set_groove", "redo", "list_scales",
 ];
+
+// --- vendored reference library -------------------------------------------------------------
+// The agent has no filesystem tools (see index.ts), so this is the only way it reaches the
+// library. Everything is resolved under REF_ROOT and refused outside it.
+const REF_ROOT = join(AGENT_ROOT, "reference", "music-composition");
+const REF_CACHE = new Map<string, string>();
+const MAX_CHARS = 12_000;
+
+function referencePaths(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    if (!existsSync(dir)) return;
+    for (const name of readdirSync(dir).sort()) {
+      const p = join(dir, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (name.endsWith(".md")) out.push(relative(REF_ROOT, p).split(sep).join("/"));
+    }
+  };
+  walk(REF_ROOT);
+  return out;
+}
+
+/** Files whose path shares the most words with the request — so a wrong guess self-corrects. */
+function nearest(query: string, limit = 6): string[] {
+  const words = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return referencePaths()
+    .map((p) => ({ p, score: words.filter((w) => p.toLowerCase().includes(w)).length }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => x.p);
+}
+
+/** Returns just the requested section of a document, heading included. */
+function slice(body: string, heading: string): string | null {
+  const lines = body.split(/\r?\n/);
+  const want = heading.toLowerCase().replace(/^#+\s*/, "").trim();
+  let start = -1;
+  let depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(#+)\s+(.*)$/.exec(lines[i]);
+    if (!m) continue;
+    if (start === -1 && m[2].toLowerCase().trim().includes(want)) {
+      start = i;
+      depth = m[1].length;
+    } else if (start !== -1 && m[1].length <= depth) {
+      return lines.slice(start, i).join("\n");
+    }
+  }
+  return start === -1 ? null : lines.slice(start).join("\n");
+}
+
+export async function readReference(input: Record<string, unknown>) {
+  const rel = String(input.path ?? "");
+  const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true });
+  if (!rel.endsWith(".md")) {
+    return err(`path must be a .md file under the reference library. Closest: ${nearest(rel).join(", ")}`);
+  }
+  const target = resolve(REF_ROOT, rel);
+  const root = realpathSync(REF_ROOT);
+  if (!target.startsWith(root + sep) || !existsSync(target)) {
+    return err(`no such reference '${rel}'. Closest: ${nearest(rel).join(", ")}`);
+  }
+  // Resolve symlinks too, so a link cannot point out of the library.
+  if (!realpathSync(target).startsWith(root + sep)) {
+    return err(`'${rel}' is outside the reference library`);
+  }
+  let body = REF_CACHE.get(target) ?? readFileSync(target, "utf8");
+  REF_CACHE.set(target, body);
+  if (typeof input.section === "string" && input.section.trim()) {
+    const part = slice(body, input.section);
+    if (!part) {
+      const headings = body.split(/\r?\n/).filter((l) => /^#+\s/.test(l)).map((l) => l.replace(/^#+\s*/, "")).slice(0, 20);
+      return err(`no section '${input.section}' in ${rel}. Headings: ${headings.join(" | ")}`);
+    }
+    body = part;
+  }
+  const cap = Math.min(Number(input.max_chars ?? MAX_CHARS) || MAX_CHARS, 20_000);
+  if (body.length > cap) {
+    const cut = body.lastIndexOf("\n#", cap);
+    body = body.slice(0, cut > cap / 2 ? cut : cap) + `\n\n[truncated — call again with section="..." for the rest]`;
+  }
+  return { content: [{ type: "text" as const, text: body }] };
+}
 
 export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, result: string, ok: boolean) => void) {
   const genParams = z
@@ -102,15 +188,15 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
     tool("suggest_chords", "Get a few idiomatic 4-bar progressions for the current key and a style, as chord symbols with roman numerals. Use as raw material, then adapt.", { style: z.string().optional(), count: z.number().int().min(1).max(8).optional(), seed: z.number().int().optional() }, wrap(rpc, "suggest_chords", onCall)),
     tool(
       "set_notes",
-      "Write explicit notes for a track in a section (replaces the clip). Melody/bass/chords notation: tokens 'PITCH:DUR' where DUR is 1,2,4,8,16,32 (add '.' for dotted, 't' for triplet), 'r:DUR' rests, '~' ties to the next same pitch, '@v90' velocity, '/syl' lyric; bar lines '|' optional. Example: 'E4:8 E4:8 F4:8 G4:4. r:8 | G4:4 F4:4 E4:2'. Drums notation: one lane per line, 16th steps: 'K: x---x---x---x---' 'S: ----x-------x-g-' 'H: x-x-x-x-x-x-x-x-' (X accent, g ghost, f flam; lanes K S CL H OH RS T1 T2 T3 RD CR P). Notes past the section end are dropped. Humanization is applied unless humanize=false.",
-      { track: TRACK, section: z.string(), notation: z.string(), humanize: z.boolean().optional() },
+      "Write explicit notes for a track in a section (replaces the clip). Melody/bass/chords notation: tokens 'PITCH:DUR' where DUR is 1,2,4,8,16,32 (add '.' for dotted, 't' for triplet), 'r:DUR' rests, '~' ties to the next same pitch, '@v90' velocity, '/syl' lyric; bar lines '|' optional. Example: 'E4:8 E4:8 F4:8 G4:4. r:8 | G4:4 F4:4 E4:2'. Drums notation: one lane per line, 16th steps: 'K: x---x---x---x---' 'S: ----x-------x-g-' 'H: x-x-x-x-x-x-x-x-' (X accent, g ghost, f flam; lanes K S CL H OH RS T1 T2 T3 RD CR P). '@t+12' places a note 12 ms late against the grid ('@t-8' early) when you want a deliberate push or drag. Notes past the section end are dropped. Humanization is applied unless humanize=false. Pass from_bar (and to_bar) to rewrite only those bars — fixing bar 3 does not mean resending the whole clip.",
+      { track: TRACK, section: z.string(), notation: z.string(), humanize: z.boolean().optional(), from_bar: z.number().int().min(1).optional(), to_bar: z.number().int().min(1).optional() },
       wrap(rpc, "set_notes", onCall),
     ),
     tool("generate", "Generate one track for a section with the rule engine (voice-led chords, motif-developed melody, bass pattern, groove drums), then humanize. Returns the notation and an analysis. Re-run with a different seed for another take, or pass a motif/lyrics/pattern to steer it.", { track: TRACK, section: z.string(), params: genParams }, wrap(rpc, "generate", onCall)),
     tool("generate_all", "Generate every active, unlocked layer of a section in dependency order (chords, melody, then pads/arps/plucks, bass/sub, counter/harmony, drums/percussion).", { section: z.string(), params: genParams }, wrap(rpc, "generate_all", onCall)),
     tool(
       "humanize",
-      "Re-apply humanization to a track (all sections or one). Params override the style preset: timing_ms (looseness at 16th level, 3-15), pocket_ms (negative = laid back, positive = pushed), swing (0.5 straight .. 0.66 heavy), swing_16ths, vel_jitter (0-0.15), accent (0-1), phrase_arc (0-1), gate_var (0-0.2), seed.",
+      "Re-apply humanization to a track (all sections or one). Params override the style preset: timing_ms (the real millisecond spread, 3 tight .. 15 loose), pocket_ms (negative = laid back, positive = pushed), snare_pocket_ms (backbeat placement: -5 pop and rock, +12 hip-hop and R&B), pocket_spread (how far a kit spreads around the pocket), swing (0.5 straight .. 0.66 heavy), swing_16ths, vel_jitter (0-0.15), accent (0-1), phrase_arc (0-1), gate_var (0-0.2), seed.",
       {
         track: TRACK,
         section: z.string().optional(),
@@ -124,6 +210,8 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
             accent: z.number().min(0).max(1).optional(),
             phrase_arc: z.number().min(0).max(1).optional(),
             gate_var: z.number().min(0).max(0.3).optional(),
+            snare_pocket_ms: z.number().min(-30).max(30).optional(),
+            pocket_spread: z.number().min(0).max(3).optional(),
             seed: z.number().int().optional(),
           })
           .optional(),
@@ -136,6 +224,35 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
     tool("clear", "Clear notes of a track (all sections or one), or everything.", { track: TRACK.optional(), section: z.string().optional() }, wrap(rpc, "clear", onCall)),
     tool("transpose", "Transpose notes by semitones (pitched tracks only unless a track is named).", { semitones: z.number().int(), track: TRACK.optional(), section: z.string().optional() }, wrap(rpc, "transpose", onCall)),
     tool("undo", "Undo the last change.", {}, wrap(rpc, "undo", onCall)),
+    tool("redo", "Redo the change you just undid.", {}, wrap(rpc, "redo", onCall)),
+    tool(
+      "vary",
+      "Regenerate a section as a variation of itself: same harmony, same motif, a different performance. Use after copy_section (which copies verbatim) so a repeated chorus develops instead of repeating, or when the user asks for 'the same but different'.",
+      { section: z.string(), track: TRACK.optional().describe("one layer, or all unlocked layers of the section"), amount: z.number().min(0).max(1).optional().describe("0 subtle .. 1 far from the original"), seed: z.number().int().optional() },
+      wrap(rpc, "vary", onCall),
+    ),
+    tool(
+      "set_groove",
+      "Set the groove template for the song or one layer: straight_pop, swing_16 (MPC 16ths), boom_bap (dragged backbeat), house, jazz_swing, tresillo (3+3+2), or none for dead straight. Defaults come from the style.",
+      { groove: z.string(), track: TRACK.optional() },
+      wrap(rpc, "set_groove", onCall),
+    ),
+    tool("list_instruments", "List the General MIDI instruments set_instrument accepts, with their program numbers.", {}, wrap(rpc, "list_instruments", onCall)),
+    tool("list_scales", "List the scales set_key_tempo accepts.", {}, wrap(rpc, "list_scales", onCall)),
+    tool(
+      "read_reference",
+      "Read one file from the vendored music-composition reference library (harmony, melody, groove, form, orchestration, instrument idiom, 24+ genres). Pick a path from the index in your instructions; never guess. Use it for musical depth you do not already have — an unfamiliar genre, a harmonic device, how an instrument is really written for — at most three files per turn.",
+      {
+        path: z.string().describe("path from the index, e.g. 'references/genres/afrobeats-and-amapiano.md'"),
+        section: z.string().optional().describe("return only this heading's section"),
+        max_chars: z.number().int().min(500).max(20000).optional(),
+      },
+      async (input: Record<string, unknown>) => {
+        const r = await readReference(input);
+        onCall?.("read_reference", input, r.content[0].text.slice(0, 200), !("isError" in r));
+        return r;
+      },
+    ),
     tool("export", "Write the current song (or one section) as latest.json + .mid files for FL Studio (the FLVSTX Import piano-roll script reads them). Only when the user asks to export/commit.", { section: z.string().optional() }, wrap(rpc, "export", onCall)),
   ];
   return createSdkMcpServer({ name: "flvstx", version: "0.1.0", tools });
