@@ -30,6 +30,32 @@ PC). The plugin starts `node agent/dist/index.js --port 7878` on the first chat 
 `FLVSTX_AGENT_DIR` if the repo is not at `D:\FLVSTX`, `FLVSTX_PORT` to change the port, and
 `FLVSTX_MODEL` to force a model.
 
+## Editor layout and composer
+
+Use **Composer** in the top toolbar to show or hide chat and make room for the piano roll.
+Drag panel dividers to resize them; **Settings > Display size** changes text and control sizes. MIDI output routing also lives in Settings.
+Section tabs scroll horizontally, and the arrangement grid scrolls when the song grows.
+
+The composer keeps its message input below the transcript. **Quick ideas** and the starter
+buttons fill an editable draft; press **Send request** or Enter when ready. Shift+Enter adds
+a new line. Consecutive tool calls appear as one expandable **composition steps** entry. **Chat options > Clear
+transcript** clears visible messages while retaining the song and composer session.
+
+The piano roll's **Help** menu lists editing gestures and shortcuts. **Fit notes** frames the selected
+section and its pitch range; hide Composer for a wider editing area. Layer cards show a miniature
+note preview and separate Mute, Lock, and MIDI drag controls. Expand **Section details** to edit
+a section. Composition actions sit above the piano roll; playback and export sit below it.
+
+### Navigating the piano roll
+
+- Enable **Pan** and drag to move the view in both directions. Turn Pan off to edit notes.
+- Middle-mouse drag pans without switching modes.
+- Scroll moves through pitches; Shift+scroll or scrolling over the ruler moves through time.
+- Use the right pitch scrollbar and bottom time scrollbar for direct navigation.
+- **Time -/+** zooms horizontally; **Pitch -/+** changes row height.
+- Ctrl+scroll zooms time; Ctrl+Shift+scroll (or Ctrl+scroll over the keys) zooms pitch.
+- **Fit notes** resets both axes. When the whole section fits, zoom in to pan horizontally.
+
 ## Layers and sections
 
 A song is a list of **sections** (each with a role: intro, verse, pre-chorus, chorus, bridge, break, build,

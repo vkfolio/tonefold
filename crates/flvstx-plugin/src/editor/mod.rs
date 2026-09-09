@@ -2,6 +2,7 @@
 //! arrangement grid, per-layer suggestions with takes, agent connection management, persistence sync.
 
 mod chat;
+mod theme;
 mod piano_roll;
 
 use crate::state::{ChatRole, Persisted, Shared};
@@ -62,6 +63,8 @@ pub struct EditorState {
     /// Chat model: "default", "sonnet", "opus".
     pub model: String,
     show_arrangement: bool,
+    show_composer: bool,
+    autosave_pending: bool,
     add_kind: TrackRole,
     /// Output channel chosen in the top bar this frame (applied through the param setter).
     pending_output: Option<i32>,
@@ -103,11 +106,31 @@ fn system_dpi_scale() -> f32 {
 pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::dark();
+    style.visuals.override_text_color = Some(theme::TEXT);
+    style.visuals.panel_fill = theme::PANEL;
+    style.visuals.window_fill = theme::SURFACE;
+    style.visuals.extreme_bg_color = theme::CANVAS;
+    style.visuals.faint_bg_color = theme::SURFACE;
+    style.visuals.selection.bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, theme::ACCENT);
+    for widget in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active, &mut style.visuals.widgets.open] {
+        widget.corner_radius = egui::CornerRadius::same(6);
+        widget.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
+        widget.fg_stroke = egui::Stroke::new(1.0, theme::TEXT);
+        widget.weak_bg_fill = theme::SURFACE;
+        widget.bg_fill = theme::SURFACE;
+    }
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(48, 61, 73);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 61, 73);
+    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.widgets.noninteractive.fg_stroke.color = theme::MUTED;
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
     let base: [(egui::TextStyle, f32); 5] = [
-        (egui::TextStyle::Small, 10.0),
+        (egui::TextStyle::Small, 11.0),
         (egui::TextStyle::Body, 13.0),
         (egui::TextStyle::Button, 13.0),
-        (egui::TextStyle::Heading, 18.0),
+        (egui::TextStyle::Heading, 20.0),
         (egui::TextStyle::Monospace, 12.5),
     ];
     for (ts, size) in base {
@@ -115,9 +138,9 @@ pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
             f.size = size * scale;
         }
     }
-    style.spacing.item_spacing = egui::vec2(6.0, 4.0) * scale;
-    style.spacing.button_padding = egui::vec2(5.0, 2.0) * scale;
-    style.spacing.interact_size = egui::vec2(40.0, 18.0) * scale;
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0) * scale;
+    style.spacing.button_padding = egui::vec2(10.0, 5.0) * scale;
+    style.spacing.interact_size = egui::vec2(40.0, 26.0) * scale;
     style.spacing.icon_width = 14.0 * scale;
     style.spacing.combo_width = 100.0 * scale;
     ctx.set_style(style);
@@ -401,16 +424,18 @@ impl EditorState {
                 if let Ok(mut w) = self.params.state_json.write() {
                     w.clone_from(&s);
                 }
-                // The standalone has no host to save state for it, so keep a copy on disk.
-                let due = self.last_autosave.map(|t| t.elapsed().as_secs_f32() > 2.0).unwrap_or(true);
-                if is_standalone() && due {
-                    self.last_autosave = Some(std::time::Instant::now());
-                    if let Some(path) = autosave_path() {
-                        if let Some(dir) = path.parent() {
-                            let _ = std::fs::create_dir_all(dir);
-                        }
-                        let _ = std::fs::write(path, &s);
-                    }
+                self.autosave_pending = true;
+            }
+        }
+        // Flush the final edit after a burst, even if no further revision arrives.
+        if is_standalone() && self.autosave_pending
+            && self.last_autosave.map(|t| t.elapsed().as_secs_f32() >= 2.0).unwrap_or(true)
+        {
+            self.last_autosave = Some(std::time::Instant::now());
+            if let Some(path) = autosave_path() {
+                match save_project(shared, self, &path) {
+                    Ok(()) => self.autosave_pending = false,
+                    Err(e) => self.status = format!("Autosave failed: {e}"),
                 }
             }
         }
@@ -433,8 +458,8 @@ fn summarize_input(name: &str, input: &serde_json::Value) -> String {
     parts.join(" ")
 }
 
-pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn Editor>> {
-    let state = EditorState {
+fn initial_state(params: Arc<FlvstxParams>) -> EditorState {
+    EditorState {
         params: params.clone(),
         agent: Mutex::new(None),
         child: Mutex::new(None),
@@ -461,6 +486,8 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         take_seed: 100,
         model: "default".into(),
         show_arrangement: false,
+        show_composer: true,
+        autosave_pending: false,
         add_kind: TrackRole::Arpeggio,
         pending_output: None,
         pending_sound: None,
@@ -470,7 +497,11 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         name_draft: String::new(),
         name_focused: false,
         md_cache: egui_commonmark::CommonMarkCache::default(),
-    };
+    }
+}
+
+pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn Editor>> {
+    let state = initial_state(params.clone());
     let mut state = state;
     // The standalone picks up where it left off; in a DAW the host restores the project instead.
     if is_standalone() {
@@ -494,6 +525,7 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
         state,
         move |ctx, state| {
             apply_ui_scale(ctx, state.ui_scale);
+            state.piano.row_h = 11.0 * state.ui_scale;
             state.applied_scale = state.ui_scale;
         },
         move |ctx, setter, st| {
@@ -516,20 +548,26 @@ pub fn create(params: Arc<FlvstxParams>, shared: Arc<Shared>) -> Option<Box<dyn 
 
 fn draw(ctx: &egui::Context, st: &mut EditorState, shared: &Shared) {
     let scale = st.ui_scale;
-    egui::TopBottomPanel::top("top").show(ctx, |ui| {
+    egui::TopBottomPanel::top("top").frame(theme::panel_frame()).show(ctx, |ui| {
         top_bar(ui, st, shared);
+        ui.add_space(5.0 * scale);
         sections_strip(ui, st, shared);
         if st.show_arrangement {
-            arrangement_grid(ui, st, shared);
+            egui::ScrollArea::both().id_salt("arrangement-scroll").max_height(150.0 * scale).show(ui, |ui| {
+                arrangement_grid(ui, st, shared);
+            });
         }
     });
-    egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
+    egui::TopBottomPanel::bottom("bottom").frame(theme::panel_frame()).show(ctx, |ui| {
         transport(ui, st, shared);
     });
-    egui::SidePanel::left("chat").resizable(true).default_width(360.0 * scale).min_width(240.0 * scale).max_width(560.0 * scale).show(ctx, |ui| {
-        chat::show(ui, st, shared);
-    });
-    egui::SidePanel::right("layers").resizable(true).default_width(150.0 * scale).min_width(110.0 * scale).max_width(260.0 * scale).show(ctx, |ui| {
+    if st.show_composer {
+        let max_width = (ctx.screen_rect().width() * 0.42).max(220.0);
+        egui::SidePanel::left("composer-v2").frame(theme::panel_frame()).resizable(true).default_width((280.0 * scale).min(max_width)).min_width(220.0).max_width(max_width).show(ctx, |ui| {
+            chat::show(ui, st, shared);
+        });
+    }
+    egui::SidePanel::right("layers-v2").frame(theme::panel_frame()).resizable(true).default_width(220.0 * scale).min_width(205.0 * scale).max_width(300.0 * scale).show(ctx, |ui| {
         layers_panel(ui, st, shared);
     });
     // Central area: piano roll, with nih-plug's resize corner (the host owns the window size; the
@@ -537,7 +575,11 @@ fn draw(ctx: &egui::Context, st: &mut EditorState, shared: &Shared) {
     let egui_state = st.params.editor_state.clone();
     let min = egui::vec2(900.0, 560.0);
     ResizableWindow::new("flvstx-window").min_size(min).show(ctx, &egui_state, |ui| {
-        piano_roll::show(ui, &mut st.piano, shared);
+        egui::Frame::new().fill(theme::CANVAS).inner_margin(12.0).show(ui, |ui| {
+            generation_bar(ui, st, shared);
+            ui.add_space(8.0);
+            piano_roll::show(ui, &mut st.piano, shared);
+        });
     });
 }
 
@@ -546,8 +588,9 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         let g = shared.lock_store();
         (g.session.key, g.session.tempo, g.session.style.clone(), g.session.time_sig)
     };
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("FLVSTX").strong().size(18.0 * st.ui_scale));
+    ui.horizontal_wrapped(|ui| {
+        theme::brand(ui, st.ui_scale);
+        ui.add_space(16.0 * st.ui_scale);
         let file = project_path();
         ui.menu_button("Song…", |ui| {
             match &file {
@@ -613,8 +656,8 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             });
         }
         let mut num = ts.num;
-        ui.label(format!("{}/{}", ts.num, ts.den));
-        if ui.add(egui::DragValue::new(&mut num).range(2..=12)).changed() {
+        ui.label("Meter");
+        if ui.add(egui::DragValue::new(&mut num).range(2..=12).suffix(format!("/{}", ts.den))).changed() {
             let mut g = shared.lock_store();
             let _ = g.mutate(|s| {
                 s.time_sig.num = num;
@@ -637,6 +680,21 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             });
         }
         ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("Settings", |ui| {
+                if !st.status.is_empty() { ui.label(&st.status); ui.separator(); }
+                theme::eyebrow(ui, "DISPLAY SIZE");
+            let sizes = [("S", 1.0f32), ("M", 1.25), ("L", 1.5), ("XL", 1.8), ("XXL", 2.2)];
+            let cur = sizes.iter().min_by(|a, b| (a.1 - st.ui_scale).abs().partial_cmp(&(b.1 - st.ui_scale).abs()).unwrap()).map(|s| s.0).unwrap_or("M");
+            egui::ComboBox::from_id_salt("ui-size").width(48.0 * st.ui_scale).selected_text(format!("A {cur}")).show_ui(ui, |ui| {
+                for (label, v) in sizes {
+                    if ui.selectable_label((v - st.ui_scale).abs() < 0.01, label).clicked() {
+                        st.ui_scale = v;
+                    }
+                }
+            });
+                ui.separator();
+                theme::eyebrow(ui, "MIDI OUTPUT");
         // Which layer this plugin instance sends to its MIDI output (one instance per FL instrument).
         let cur = st.params.output.value();
         let (label, choices): (String, Vec<(i32, String)>) = {
@@ -661,22 +719,9 @@ fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         }).response.on_hover_text("Which layer this plugin instance plays through its MIDI output. Add one FLVSTX per instrument and pick that instrument's layer here.");
         ui.separator();
-        ui.checkbox(&mut st.show_arrangement, "Arrangement").on_hover_text("Show the layers × sections grid");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let sizes = [("S", 1.0f32), ("M", 1.25), ("L", 1.5), ("XL", 1.8), ("XXL", 2.2)];
-            let cur = sizes.iter().min_by(|a, b| (a.1 - st.ui_scale).abs().partial_cmp(&(b.1 - st.ui_scale).abs()).unwrap()).map(|s| s.0).unwrap_or("M");
-            egui::ComboBox::from_id_salt("ui-size").width(48.0 * st.ui_scale).selected_text(format!("A {cur}")).show_ui(ui, |ui| {
-                for (label, v) in sizes {
-                    if ui.selectable_label((v - st.ui_scale).abs() < 0.01, label).clicked() {
-                        st.ui_scale = v;
-                    }
-                }
             });
-            let host_tempo = f32::from_bits(shared.host_tempo_bits.load(Ordering::Relaxed));
-            ui.label(RichText::new(format!("host {:.0} BPM {}", host_tempo, if shared.host_playing.load(Ordering::Relaxed) { "▶" } else { "■" })).small().weak());
-            if !st.status.is_empty() {
-                ui.label(RichText::new(&st.status).small().weak());
-            }
+            ui.toggle_value(&mut st.show_arrangement, "Arrangement");
+            ui.toggle_value(&mut st.show_composer, "Composer");
         });
     });
 }
@@ -697,18 +742,27 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     let total_bars: u32 = sections.iter().map(|s| s.bars).sum::<u32>().max(1);
     let playhead = shared.playhead_tick.load(Ordering::Relaxed);
     let bar_ticks = shared.lock_store().session.bar_ticks();
+    theme::eyebrow(ui, "SONG STRUCTURE");
+    let avail = (ui.available_width() - 160.0 * st.ui_scale).max(100.0);
+    egui::ScrollArea::horizontal().id_salt("section-tabs").show(ui, |ui| {
     ui.horizontal(|ui| {
-        let avail = ui.available_width() - 160.0 * st.ui_scale;
         let mut new_selection = None;
         for sec in &sections {
-            let w = (avail * sec.bars as f32 / total_bars as f32).max(48.0 * st.ui_scale);
+            let w = (avail * sec.bars as f32 / total_bars as f32).clamp(112.0 * st.ui_scale, 270.0 * st.ui_scale);
             let is_sel = selected.as_deref() == Some(sec.id.as_str());
             let start = shared.lock_store().session.section_start(&sec.id).unwrap_or(0);
             let in_play = playhead >= start && playhead < start + sec.bars * bar_ticks && (shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed));
-            let fill = if is_sel { Color32::from_rgb(70, 90, 130) } else { Color32::from_rgb(45, 48, 55) };
-            let label = format!("{}\n{} bars · {} · e{:.0}%", sec.name, sec.bars, sec.role.name(), sec.energy * 100.0);
-            let btn = egui::Button::new(RichText::new(label).small()).fill(fill).min_size(egui::vec2(w, 34.0 * st.ui_scale));
-            let resp = ui.add(btn);
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 52.0 * st.ui_scale), egui::Sense::click());
+            let fill = if is_sel { Color32::from_rgb(31, 61, 66) } else if resp.hovered() { Color32::from_rgb(39, 48, 60) } else { theme::SURFACE };
+            ui.painter().rect_filled(rect, 7.0, fill);
+            ui.painter().rect_stroke(rect, 7.0, egui::Stroke::new(1.0, if is_sel { theme::ACCENT } else { theme::BORDER }), egui::StrokeKind::Inside);
+            let text_x = rect.left() + 12.0 * st.ui_scale;
+            let mut title = egui::text::LayoutJob::simple(sec.name.clone(), egui::FontId::proportional(13.0 * st.ui_scale), theme::TEXT, w - 24.0 * st.ui_scale);
+            title.wrap.max_rows = 1;
+            title.wrap.break_anywhere = true;
+            let galley = ui.painter().layout_job(title);
+            ui.painter().with_clip_rect(rect).galley(egui::pos2(text_x, rect.top() + 9.0 * st.ui_scale), galley, theme::TEXT);
+            ui.painter().with_clip_rect(rect).text(egui::pos2(text_x, rect.top() + 32.0 * st.ui_scale), egui::Align2::LEFT_TOP, format!("{} bars  /  {}", sec.bars, sec.role.name()), egui::FontId::proportional(10.0 * st.ui_scale), if is_sel { theme::ACCENT } else { theme::MUTED });
             if in_play {
                 let r = resp.rect;
                 let frac = (playhead - start) as f32 / (sec.bars * bar_ticks) as f32;
@@ -740,13 +794,15 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             });
         }
     });
+    });
     if let Some(id) = selected {
         if let Some(sec) = sections.iter().find(|s| s.id == id) {
             let (mut bars, mut energy, mut role) = (sec.bars, sec.energy, sec.role);
             if !st.name_focused {
                 st.name_draft = sec.name.clone();
             }
-            ui.horizontal(|ui| {
+            egui::CollapsingHeader::new("Section details").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Section").weak());
                 let r1 = ui.add(egui::TextEdit::singleline(&mut st.name_draft).desired_width(120.0 * st.ui_scale));
                 st.name_focused = r1.has_focus();
@@ -774,7 +830,7 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                 };
                 ui.label(RichText::new(chords_text).small().color(track_color(TrackRole::Chords)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕ delete").clicked() {
+                    if ui.small_button("Delete").clicked() {
                         let mut g = shared.lock_store();
                         let _ = g.mutate(|s| {
                             s.sections.retain(|x| x.id != id);
@@ -788,7 +844,7 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                             u.selected_section = None;
                         }
                     }
-                    if ui.small_button("▶ move").clicked() {
+                    if ui.small_button("Move right").clicked() {
                         let mut g = shared.lock_store();
                         let _ = g.mutate(|s| {
                             if let Some(i) = s.sections.iter().position(|x| x.id == id) {
@@ -799,7 +855,7 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                             Ok(())
                         });
                     }
-                    if ui.small_button("◀ move").clicked() {
+                    if ui.small_button("Move left").clicked() {
                         let mut g = shared.lock_store();
                         let _ = g.mutate(|s| {
                             if let Some(i) = s.sections.iter().position(|x| x.id == id) {
@@ -833,6 +889,7 @@ fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                         });
                     }
                 });
+            });
             });
         }
     }
@@ -871,13 +928,14 @@ fn arrangement_grid(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
 
 fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     ui.heading("Layers");
+    theme::eyebrow(ui, "YOUR INSTRUMENTS");
     ui.separator();
     let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
     let tracks = shared.lock_store().session.tracks.clone();
     let mut select: Option<(String, bool)> = None; // (id, additive)
     let mut solo_changed = false;
     let mut drag_request: Option<(String, bool)> = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let mut solo = ui_state.solo_selected;
         if ui.checkbox(&mut solo, "Solo selected").on_hover_text("Play only the selected layers (click = select one, Ctrl+click = add more). Off = play everything.").changed() {
             if let Ok(mut u) = shared.ui.lock() {
@@ -892,46 +950,55 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             solo_changed = true;
         }
     });
-    egui::ScrollArea::vertical().id_salt("layers-scroll").auto_shrink([false, false]).max_height(ui.available_height() - 70.0 * st.ui_scale).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("layers-scroll").auto_shrink([false, false]).max_height((ui.available_height() - 120.0 * st.ui_scale).max(40.0)).show(ui, |ui| {
         for t in &tracks {
             let primary = ui_state.selected_track == t.id;
-            let sel = primary || ui_state.selected_tracks.contains(&t.id);
-            ui.horizontal(|ui| {
-                let fill = if primary { track_color(t.kind) } else if sel { Color32::from_rgb(70, 76, 90) } else { Color32::from_rgb(40, 42, 48) };
-                let btn = egui::Button::new(RichText::new(&t.name).color(if primary { Color32::BLACK } else { track_color(t.kind) })).fill(fill).min_size(egui::vec2(70.0 * st.ui_scale, 0.0));
-                let resp = ui.add(btn).on_hover_text(format!("{} · MIDI ch {}\n{}\nclick: select, Ctrl+click: add to selection", t.kind.name(), t.channel + 1, t.kind.description()));
-                if resp.clicked() {
-                    let additive = ui.input(|i| i.modifiers.ctrl || i.modifiers.shift);
-                    select = Some((t.id.clone(), additive));
-                }
-                // Drag handle: drag this layer's MIDI onto an FL channel / piano roll.
-                let written = ui_state.written.contains(&t.id);
-                let handle = ui.add(egui::Button::new(RichText::new(if written { "✓" } else { "⇗" }).small()).sense(egui::Sense::drag()).fill(Color32::from_rgb(48, 52, 60)))
-                    .on_hover_text("Drag onto an FL Studio channel (Channel Rack) or an open piano roll to write this layer's notes there.\nWhole song; hold Shift for the selected section only.");
-                if handle.drag_started() {
-                    let section_only = ui.input(|i| i.modifiers.shift);
-                    drag_request = Some((t.id.clone(), section_only));
-                }
-                if ui.add(egui::SelectableLabel::new(t.muted, "M")).on_hover_text("mute").clicked() {
-                    let mut g = shared.lock_store();
-                    let id = t.id.clone();
-                    let _ = g.mutate(|s| {
-                        let tr = s.track_by_mut(&id).unwrap();
-                        tr.muted = !tr.muted;
-                        Ok(())
+            let color = track_color(t.kind);
+            let clip = ui_state.selected_section.as_ref().and_then(|id| t.clips.get(id));
+            let note_count = clip.map(|c| c.notes.len()).unwrap_or(0);
+            ui.push_id(&t.id, |ui| {
+                egui::Frame::new().fill(if primary { Color32::from_rgb(33, 48, 63) } else { theme::SURFACE })
+                    .stroke(egui::Stroke::new(1.0, if primary || ui_state.selected_tracks.contains(&t.id) { color } else { theme::BORDER }))
+                    .corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0 * st.ui_scale;
+                    ui.set_width(ui.available_width());
+                    let title = ui.add(egui::Button::new(RichText::new(&t.name).strong().color(color)).frame(false)
+                        .min_size(egui::vec2(ui.available_width(), 24.0 * st.ui_scale)));
+                    if title.clicked() {
+                        select = Some((t.id.clone(), ui.input(|i| i.modifiers.ctrl || i.modifiers.shift)));
+                    }
+                    ui.label(RichText::new(format!("MIDI {}   /   {} notes", t.channel + 1, note_count)).small().color(theme::MUTED));
+                    let (r, preview) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0 * st.ui_scale), egui::Sense::click());
+                    ui.painter().rect_filled(r, 4.0, theme::CANVAS);
+                    if preview.clicked() { select = Some((t.id.clone(), false)); }
+                    if note_count == 0 {
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "No notes in this section", egui::FontId::proportional(10.0 * st.ui_scale), theme::MUTED);
+                    }
+                    if let Some(clip) = clip {
+                        let end = clip.notes.iter().map(|n| n.end()).max().unwrap_or(1).max(1) as f32;
+                        let lo = clip.notes.iter().map(|n| n.pitch).min().unwrap_or(48) as f32;
+                        let hi = clip.notes.iter().map(|n| n.pitch).max().unwrap_or(72) as f32;
+                        for n in clip.notes.iter().take(256) {
+                            let x = r.left() + 4.0 + n.start as f32 / end * (r.width() - 8.0);
+                            let y = r.bottom() - 5.0 - (n.pitch as f32 - lo) / (hi - lo).max(1.0) * (r.height() - 10.0);
+                            let w = (n.len as f32 / end * (r.width() - 8.0)).max(2.0);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, 2.0)), 1.0, color);
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.selectable_label(t.muted, "Mute").clicked() {
+                            let _ = shared.lock_store().mutate(|s| { if let Some(tr) = s.track_by_mut(&t.id) { tr.muted = !tr.muted; } Ok(()) });
+                        }
+                        if ui.selectable_label(t.locked, "Lock").on_hover_text("Protect this layer from generation").clicked() {
+                            let _ = shared.lock_store().mutate(|s| { if let Some(tr) = s.track_by_mut(&t.id) { tr.locked = !tr.locked; } Ok(()) });
+                        }
+                        let handle = ui.add(egui::Button::new(RichText::new("MIDI").small().color(color)).sense(egui::Sense::drag()))
+                            .on_hover_text("Drag MIDI onto an FL Studio channel. Hold Shift for this section only.");
+                        if handle.drag_started() { drag_request = Some((t.id.clone(), ui.input(|i| i.modifiers.shift))); }
                     });
-                }
-                if ui.add(egui::SelectableLabel::new(t.locked, "L")).on_hover_text("lock (generators skip it)").clicked() {
-                    let mut g = shared.lock_store();
-                    let id = t.id.clone();
-                    let _ = g.mutate(|s| {
-                        let tr = s.track_by_mut(&id).unwrap();
-                        tr.locked = !tr.locked;
-                        Ok(())
-                    });
-                }
+                });
+                ui.add_space(4.0);
             });
-            ui.label(RichText::new(format!("ch {}", t.channel + 1)).small().weak());
         }
     });
     if let Some((id, additive)) = select {
@@ -959,7 +1026,7 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         start_layer_drag(shared, &tid, section_only);
     }
     ui.separator();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         egui::ComboBox::from_id_salt("add-kind").width(90.0 * st.ui_scale).selected_text(st.add_kind.label()).show_ui(ui, |ui| {
             for k in TrackRole::ALL {
                 ui.selectable_value(&mut st.add_kind, k, k.label()).on_hover_text(k.description());
@@ -980,7 +1047,7 @@ fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         }
     });
-    if tracks.len() > 1 && ui.small_button("✕ remove selected layer").clicked() {
+    if tracks.len() > 1 && ui.small_button("Remove selected layer").clicked() {
         let mut g = shared.lock_store();
         let _ = dispatch(&mut g, "remove_layer", &serde_json::json!({ "track": ui_state.selected_track }));
     }
@@ -1375,12 +1442,13 @@ fn poll_export(shared: &Shared) {
 
 fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let playing = shared.playing.load(Ordering::Relaxed);
         let sync = shared.sync_to_host.load(Ordering::Relaxed);
-        if ui.add_enabled(!sync, egui::Button::new(if playing { "■ Stop" } else { "▶ Play" }).min_size(egui::vec2(70.0 * st.ui_scale, 24.0 * st.ui_scale))).clicked() {
+        if ui.add_enabled(!sync, egui::Button::new(RichText::new(if playing { "Stop" } else { "Play" }).strong().color(theme::CANVAS)).fill(theme::ACCENT).min_size(egui::vec2(70.0 * st.ui_scale, 24.0 * st.ui_scale))).clicked() {
             if playing {
                 shared.playing.store(false, Ordering::Relaxed);
+                shared.request_panic();
             } else {
                 // Start where the playhead is (dragged on the piano roll ruler), else from the top.
                 let buf = shared.playback.load();
@@ -1418,12 +1486,16 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         if ui.add(egui::Slider::new(&mut db, -30.0..=6.0).show_value(false).suffix(" dB")).on_hover_text(format!("volume {db:.0} dB")).changed() {
             st.pending_gain = Some(nih_plug::util::db_to_gain(db));
         }
-        ui.label(RichText::new(shared.soundfont_status.lock().map(|s| s.clone()).unwrap_or_default()).small().weak());
+        ui.label(RichText::new("Sound engine").small().color(theme::MUTED)).on_hover_text(shared.soundfont_status.lock().map(|s| s.clone()).unwrap_or_default());
         ui.separator();
-        if ui.button("Undo").clicked() {
+        let (can_undo, can_redo) = {
+            let g = shared.lock_store();
+            (!g.history.is_empty(), !g.redo.is_empty())
+        };
+        if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
             shared.lock_store().undo();
         }
-        if ui.button("Redo").clicked() {
+        if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
             shared.lock_store().redo();
         }
         ui.separator();
@@ -1458,7 +1530,11 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         });
     });
-    ui.horizontal(|ui| {
+}
+
+fn generation_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+    ui.horizontal_wrapped(|ui| {
         let sec = ui_state.selected_section.clone();
         let (track_name, locked, kind) = {
             let g = shared.lock_store();
@@ -1473,12 +1549,12 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             TrackRole::Percussion => "3 percussion setups",
             _ => "3 takes at different densities",
         };
-        let btn = egui::Button::new(RichText::new(format!("Suggest {track_name}")).color(if locked { Color32::GRAY } else { track_color(kind) }));
+        let btn = egui::Button::new(RichText::new(format!("Suggest {track_name}")).strong().color(theme::CANVAS)).fill(track_color(kind));
         if ui.add_enabled(sec.is_some() && !locked, btn).on_hover_text(hint).clicked() {
             let tid = ui_state.selected_track.clone();
             st.suggest(shared, &tid, sec.as_deref().unwrap());
         }
-        if !st.takes.is_empty() && st.take_track.is_some() && sec.as_deref() == Some(st.take_section.as_str()) {
+        if !st.takes.is_empty() && st.take_track.as_deref() == Some(ui_state.selected_track.as_str()) && sec.as_deref() == Some(st.take_section.as_str()) {
             ui.label(RichText::new("takes:").weak());
             for i in 0..st.takes.len() {
                 let label = format!("{} - {}", i + 1, st.takes[i].label);
@@ -1519,4 +1595,107 @@ fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::*;
+
+    #[test]
+    fn composer_input_remains_visible_with_long_transcript() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Flvstx::default().params.clone());
+            st.ui_scale = scale;
+            let shared = Shared::new(flvstx_core::Session::default());
+            for _ in 0..40 {
+                shared.push_chat(ChatRole::User, "Please develop the melody in this section.");
+            }
+            // Panels need a warm-up frame to settle their dimensions.
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                let send = output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Send request" => Some(text),
+                    _ => None,
+                }).expect("send button should be rendered");
+                assert!(send.pos.y >= 0.0 && send.pos.y + send.galley.size().y <= 620.0,
+                    "input must remain visible at scale {scale}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod visual_preview {
+    use super::*;
+
+    /// Exports actual tessellated UI geometry for scripts/render_ui_preview.py.
+    #[test]
+    #[ignore = "manual visual QA artifact"]
+    fn export_editor_preview() {
+        let ctx = egui::Context::default();
+        let mut st = initial_state(crate::Flvstx::default().params.clone());
+        st.ui_scale = 1.5;
+        apply_ui_scale(&ctx, st.ui_scale);
+        let shared = Shared::new(flvstx_core::Session::default());
+        {
+            let mut g = shared.lock_store();
+            g.session.key = Key::new(5, ScaleKind::Major);
+            g.session.tempo = 112.0;
+            g.session.style = "kids".into();
+            let mut first = None;
+            for (name, bars, energy) in [("Intro", 4, 0.3), ("Verse Cow", 16, 0.55), ("Verse Pig", 16, 0.65), ("Verse Duck", 16, 0.85), ("Outro", 4, 0.3)] {
+                let id = g.session.add_section(name, bars, energy);
+                if first.is_none() { first = Some(id.clone()); }
+                let key = g.session.key;
+                let ticks = g.session.bar_ticks();
+                g.session.section_mut(&id).unwrap().chords = flvstx_core::notation::parse_chords("F | Bb | C | F", &key, bars, ticks).unwrap();
+            }
+            let _ = dispatch(&mut g, "generate_song", &serde_json::json!({"params":{"seed":42}}));
+            let mut u = shared.ui.lock().unwrap();
+            u.selected_section = first;
+            u.selected_track = "chords".into();
+        }
+        shared.push_chat(ChatRole::User, "Create Old MacDonald Had a Farm, with a different animal in each verse.");
+        for _ in 0..24 { shared.push_chat(ChatRole::Tool, "generate_section: arranged chords, melody, bass and drums"); }
+        shared.push_chat(ChatRole::Assistant, "### Your farmyard song is ready
+
+I built a playful arrangement in **F major at 112 BPM**, with a familiar melody and a little more energy in each verse.
+
+- **Intro** sets up the tune
+- **Three verses** leave room for the animal sounds
+- **Outro** brings everyone home
+
+Press **Play** to hear it. Select a layer to explore its notes, or tell me what you would like to change.");
+        let mut textures = Vec::new();
+        for frame in 0..4 {
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2048.0, 1190.0))),
+                ..Default::default()
+            }, |ctx| draw(ctx, &mut st, &shared));
+            for (_, delta) in &output.textures_delta.set {
+                let (size, pixels): (_, Vec<[u8; 4]>) = match &delta.image {
+                    egui::ImageData::Color(img) => (img.size, img.pixels.iter().map(|p| p.to_array()).collect()),
+                    egui::ImageData::Font(img) => (img.size, img.srgba_pixels(None).map(|p| p.to_array()).collect()),
+                };
+                textures.push(serde_json::json!({"pos":delta.pos,"size":size,"pixels":pixels}));
+            }
+            if frame == 3 {
+                let meshes: Vec<_> = ctx.tessellate(output.shapes, output.pixels_per_point).into_iter().filter_map(|p| {
+                    let egui::epaint::Primitive::Mesh(mesh) = p.primitive else { return None };
+                    let vertices: Vec<_> = mesh.vertices.iter().map(|v| serde_json::json!([v.pos.x,v.pos.y,v.uv.x,v.uv.y,v.color.to_array()])).collect();
+                    Some(serde_json::json!({"clip":[p.clip_rect.min.x,p.clip_rect.min.y,p.clip_rect.max.x,p.clip_rect.max.y],"vertices":vertices,"indices":mesh.indices}))
+                }).collect();
+                let path = std::path::Path::new("../../target/ui-preview.json");
+                std::fs::write(path, serde_json::to_vec(&serde_json::json!({"size":[2048,1190],"textures":textures,"meshes":meshes})).unwrap()).unwrap();
+            }
+        }
+    }
 }
