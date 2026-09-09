@@ -2,3 +2,6 @@ target/
 node_modules/
 agent/dist/
 *.log
+
+# Release packages built by scripts/package.ps1
+/dist/

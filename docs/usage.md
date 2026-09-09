@@ -1,12 +1,23 @@
 # FLVSTX — using it in FL Studio
 
-## Build and install
+## Install
+
+From a release package — unzip it and run:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+From a checkout, build first, then run the same command:
 
 ```
 cargo xtask bundle flvstx-plugin --release
-cd agent && npm install && npm run build && cd ..
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+cargo build --release -p flvstx-plugin --features standalone --bin flvstx-standalone
+cargo build --release -p flvstx-cli
+cd agent && npm ci && npm run build && cd ..
 ```
+
+`scripts\package.ps1` does all of that and stages a release zip under `dist\`.
 
 `install.ps1` copies `FLVSTX.clap` to `C:\Program Files\Common Files\CLAP`, `FLVSTX.vst3` to
 `C:\Program Files\Common Files\VST3`, and the piano-roll script to

@@ -14,18 +14,20 @@ Terms used below:
 
 ## Part 1 · Install (once)
 
-You need: FL Studio 2024 or newer, Node.js 22, Rust (for building), and Claude Code logged in on this PC.
+You need: FL Studio 2024 or newer, and Node.js 20+ with Claude Code logged in on this PC (only the
+chat composer needs those two — everything else works without them).
 
-1. Open a terminal in `D:\FLVSTX` and build everything:
+1. Unzip the release, open a terminal in the unzipped folder, and run:
    ```
-   cargo xtask bundle flvstx-plugin --release
-   cd agent
-   npm install
-   npm run build
-   cd ..
    powershell -ExecutionPolicy Bypass -File scripts\install.ps1
    ```
-   The last command prints three lines: the CLAP file, the VST3 file, and the piano-roll script it copied.
+   Accept the administrator prompt — that is the plugins going into the folders FL Studio scans.
+   It prints what it installed: the CLAP and VST3 files, the standalone app, the composer and the
+   piano-roll script. First run also downloads the built-in sounds (31 MB).
+
+   Building from source instead? `cargo xtask bundle flvstx-plugin --release`, then
+   `cargo build --release -p flvstx-plugin --features standalone --bin flvstx-standalone`, then
+   `cd agent && npm ci && npm run build && cd ..`, then the same install command.
 2. Check Claude is logged in: run `claude` in a terminal once; if it asks you to log in, do it, then exit.
 
 You should now have:

@@ -229,7 +229,8 @@ pub fn context_for(store: &Store) -> String {
     describe(&store.session)
 }
 
-/// Locates the agent directory: `FLVSTX_AGENT_DIR`, else `<exe dir>/../../agent`, else `D:\FLVSTX\agent`.
+/// Locates the composer sidecar: `FLVSTX_AGENT_DIR`, else an `agent` folder beside the
+/// executable (a repo checkout), else the installed copy under `%LOCALAPPDATA%/FLVSTX/agent`.
 pub fn agent_dir() -> std::path::PathBuf {
     if let Some(d) = std::env::var_os("FLVSTX_AGENT_DIR") {
         return d.into();
@@ -242,7 +243,7 @@ pub fn agent_dir() -> std::path::PathBuf {
             }
         }
     }
-    std::path::PathBuf::from(r"D:\FLVSTX\agent")
+    flvstx_core::midi::default_export_dir().parent().map(|p| p.join("agent")).unwrap_or_else(|| std::path::PathBuf::from("agent"))
 }
 
 /// Spawns the sidecar (`node dist/index.js --port N`), returning the child process.
