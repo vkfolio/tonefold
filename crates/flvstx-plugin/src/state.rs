@@ -45,6 +45,9 @@ pub enum ChatRole {
 pub struct ChatLine {
     pub role: ChatRole,
     pub text: String,
+    /// Which specialist said it, when the producer delegated. None = the producer, or the composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Everything persisted in the DAW project.
@@ -96,6 +99,18 @@ pub struct Shared {
     pub chat: Mutex<Vec<ChatLine>>,
     pub agent_session_id: Mutex<Option<String>>,
     pub ui: Mutex<UiState>,
+    /// The producer's current plan: proposed and awaiting an answer, or approved and running.
+    pub plan: Mutex<Option<PlanState>>,
+}
+
+/// A proposed plan plus where it is. Kept on `Shared` (not the editor) so it survives a project
+/// reload and every plugin instance sees the same one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanState {
+    pub id: String,
+    pub plan: flvstx_ipc::Plan,
+    /// "awaiting_approval", "executing", "approved", "sent_back", "cancelled", "stale".
+    pub status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +212,7 @@ impl Shared {
             audio_owner: AtomicU64::new(0),
             chat: Mutex::new(Vec::new()),
             agent_session_id: Mutex::new(None),
+            plan: Mutex::new(None),
             ui: Mutex::new(UiState::default()),
         };
         let shared = Arc::new(shared);
@@ -238,8 +254,13 @@ impl Shared {
     }
 
     pub fn push_chat(&self, role: ChatRole, text: impl Into<String>) {
+        self.push_chat_from(role, text, None);
+    }
+
+    /// Same, but attributed to a specialist.
+    pub fn push_chat_from(&self, role: ChatRole, text: impl Into<String>, agent: Option<String>) {
         if let Ok(mut c) = self.chat.lock() {
-            c.push(ChatLine { role, text: text.into() });
+            c.push(ChatLine { role, text: text.into(), agent });
             if c.len() > 400 {
                 let drop = c.len() - 400;
                 c.drain(0..drop);

@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 export const AGENT_ROOT = existsSync(join(here, "..", "package.json")) ? join(here, "..") : join(here, "..", "..");
 
-export function systemPrompt(): string {
-  const base = readFileSync(join(AGENT_ROOT, "prompts", "composer.md"), "utf8");
+/** The persona differs per mode; the craft knowledge below it does not. */
+export function systemPrompt(mode: "composer" | "producer" = "composer"): string {
+  const base = readFileSync(join(AGENT_ROOT, "prompts", `${mode}.md`), "utf8");
   const skillsDir = join(AGENT_ROOT, "skills");
   let skills = "";
   if (existsSync(skillsDir)) {

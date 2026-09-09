@@ -1,6 +1,6 @@
 //! Terminal chat harness: the same RPC bridge the plugin uses, driven from stdin.
 
-use crate::{context_for, port_open, spawn_agent, AgentClient, AgentEvent};
+use crate::{context_for, port_open, spawn_agent, AgentClient, AgentEvent, Plan};
 use flvstx_core::ops::Store;
 use flvstx_core::Session;
 use std::io::{BufRead, Write};
@@ -23,10 +23,14 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         std::thread::sleep(Duration::from_millis(100));
     }
     eprintln!("[chat] connected. Type a message, or /session, /export, /undo, /save, /quit.");
+    eprintln!("[chat] /producer plans before it writes and asks you to approve; /composer answers straight away.");
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
+    // Which persona the sidecar runs. Switching ends one SDK session and resumes the other.
+    let mut mode = String::from("composer");
+    let mut model: Option<String> = None;
     loop {
-        print!("\nyou> ");
+        print!("\n{mode}> ");
         out.flush()?;
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
@@ -40,6 +44,11 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
             "/quit" | "/exit" => break,
             "/session" => {
                 println!("{}", context_for(&store.lock().unwrap()));
+                continue;
+            }
+            "/producer" | "/composer" => {
+                mode = line.trim_start_matches('/').to_string();
+                println!("mode: {mode}");
                 continue;
             }
             "/undo" => {
@@ -66,8 +75,16 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
             }
             _ => {}
         }
+        if let Some(rest) = line.strip_prefix("/model ") {
+            model = match rest.trim() {
+                "" | "default" => None,
+                m => Some(m.to_string()),
+            };
+            println!("model: {}", model.as_deref().unwrap_or("default"));
+            continue;
+        }
         let ctx = context_for(&store.lock().unwrap());
-        client.send_user_message(line, &ctx);
+        client.send_user_message_in(line, &ctx, model.as_deref(), &mode);
         // Stream events until done.
         let mut streaming_line = false;
         loop {
@@ -103,6 +120,36 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                     println!("  [done] turns={turns} cost={}", cost_usd.map(|c| format!("${c:.3}")).unwrap_or_else(|| "-".into()));
                     break;
                 }
+                Some(AgentEvent::PlanProposed { plan_id, plan }) => {
+                    if streaming_line {
+                        println!();
+                        streaming_line = false;
+                    }
+                    print_plan(&plan);
+                    // The turn is parked inside a tool call, so the answer is read here rather than
+                    // at the top-level prompt — and a piped script can answer the same way.
+                    print!("\napprove? [enter]=yes  s=stop  anything else = send back with that note\nplan> ");
+                    out.flush()?;
+                    let mut answer = String::new();
+                    let (decision, notes) = if stdin.lock().read_line(&mut answer)? == 0 {
+                        ("cancel", None)
+                    } else {
+                        match answer.trim() {
+                            "" | "y" | "yes" | "/approve" => ("approve", None),
+                            "s" | "stop" | "/stop" => ("cancel", None),
+                            note => ("reject", Some(note.to_string())),
+                        }
+                    };
+                    client.send_plan_decision(&plan_id, decision, notes.as_deref());
+                }
+                Some(AgentEvent::PlanResolved { decision, .. }) => {
+                    if decision == "stale" {
+                        println!("  [plan] that answer arrived too late");
+                    }
+                }
+                Some(AgentEvent::Phase { phase }) => {
+                    println!("  [phase] {phase}");
+                }
                 Some(AgentEvent::Error { message, .. }) => {
                     println!("\n  [error] {message}");
                     break;
@@ -127,4 +174,33 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         let _ = c.kill();
     }
     Ok(())
+}
+
+/// Prints a proposed plan as the steps it will take, so approving is answering a list of changes
+/// rather than a paragraph.
+fn print_plan(plan: &Plan) {
+    println!("\n--- plan (revision {}) ---", plan.revision.max(1));
+    if !plan.summary.is_empty() {
+        println!("{}", plan.summary);
+    }
+    let mut facts: Vec<String> = Vec::new();
+    if let Some(k) = &plan.key { facts.push(k.clone()); }
+    if let Some(t) = plan.tempo { facts.push(format!("{t:.0} BPM")); }
+    if let Some(ts) = &plan.time_signature { facts.push(ts.clone()); }
+    if let Some(sty) = &plan.style { facts.push(sty.clone()); }
+    if !facts.is_empty() {
+        println!("{}", facts.join(" | "));
+    }
+    if !plan.form.is_empty() {
+        println!("form: {}", plan.form.iter().map(|s| format!("{} x{}", s.name, s.bars)).collect::<Vec<_>>().join(" - "));
+    }
+    for (i, step) in plan.steps.iter().enumerate() {
+        println!("{:>2}. [{}] {} -> {}", i + 1, step.owner, step.title, step.targets.join(", "));
+        if !step.detail.is_empty() {
+            println!("    {}", step.detail);
+        }
+    }
+    for risk in &plan.risks {
+        println!(" !  {risk}");
+    }
 }

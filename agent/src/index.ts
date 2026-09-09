@@ -4,7 +4,8 @@ import { WebSocketServer, WebSocket } from "ws";
 import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { makeServer, TOOL_NAMES } from "./tools.js";
 import { systemPrompt, AGENT_ROOT } from "./prompt.js";
-import type { AgentMessage, ClientMessage, Rpc } from "./protocol.js";
+import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Rpc } from "./protocol.js";
+import { decisionResult, ProducerRun, writeFence } from "./producer.js";
 
 const VERSION = "0.1.0";
 const args = process.argv.slice(2);
@@ -57,9 +58,12 @@ class Connection implements Rpc {
   private q: Query | null = null;
   private running = false;
   private turnActive = false;
-  private sessionId = "";
   private lastContext = "";
   private model: string | undefined = MODEL;
+  private mode: Mode = "composer";
+  /** One conversation per mode: their tools and personas differ, so they cannot share a session. */
+  private sessionIds: Record<Mode, string> = { composer: "", producer: "" };
+  private run = new ProducerRun();
   /** tool_use id -> the subagent that made the call, so its result can be attributed too. */
   private agentOf = new Map<string, string | undefined>();
 
@@ -67,7 +71,7 @@ class Connection implements Rpc {
     ws.on("message", (data) => this.onMessage(data.toString()));
     ws.on("close", () => this.dispose());
     ws.on("error", (e) => log("ws error", e.message));
-    this.send({ type: "ready", backend: "sdk", version: VERSION });
+    this.send({ type: "ready", backend: "sdk", version: VERSION, modes: ["composer", "producer"] });
   }
 
   send(m: AgentMessage) {
@@ -104,20 +108,35 @@ class Connection implements Rpc {
         return;
       }
       case "cancel":
+        // Settle a parked plan first: interrupting while the tool handler is awaiting would tear
+        // down the call and leave the promise alive forever.
+        this.run.settleAll("cancel");
         if (this.q && this.turnActive) {
           this.q.interrupt().catch((e) => log("interrupt failed", e));
         }
         return;
+      case "plan_decision": {
+        // Never a user_message: the producer is parked inside a tool call, so the one-turn gate
+        // would reject it, and queueing it as the next turn would deadlock.
+        const settled = this.run.settle(m.plan_id, { decision: m.decision, notes: m.notes });
+        this.send({ type: "plan_resolved", plan_id: m.plan_id, decision: settled ? m.decision : "stale", notes: m.notes });
+        return;
+      }
       case "user_message": {
         if (this.turnActive) return this.send({ type: "error", message: "a turn is already running; cancel it first" });
-        if (m.session_id && !this.sessionId) this.sessionId = m.session_id;
+        if (m.session_id && !this.sessionIds[this.mode]) this.sessionIds[this.mode] = m.session_id;
         this.lastContext = m.context ?? "";
+        const wantedMode: Mode = m.mode === "producer" ? "producer" : "composer";
         const wanted = m.model && m.model !== "default" ? m.model : MODEL;
-        if (wanted !== this.model) {
+        // The two modes differ in tools, hooks and persona — all frozen when the query is created —
+        // so a mode change ends the current session and starts the other one, which resumes its own
+        // conversation by id.
+        if (wantedMode !== this.mode || wanted !== this.model) {
+          this.mode = wantedMode;
           // Model change: end the current SDK session; the next one resumes the conversation with the new model.
           this.model = wanted;
           if (this.q) {
-            log(`switching model to ${wanted ?? "default"}`);
+            log(`restarting session: mode=${this.mode} model=${wanted ?? "default"}`);
             this.inbox.close();
             this.q.interrupt().catch(() => {});
             this.q = null;
@@ -126,12 +145,18 @@ class Connection implements Rpc {
           }
         }
         this.turnActive = true;
+        if (this.mode === "producer") this.setPhase("planning");
         const text = m.context ? `<session_state>\n${m.context}\n</session_state>\n\n${m.text}` : m.text;
         this.ensureRunning();
         this.inbox.push(text);
         return;
       }
     }
+  }
+
+  private setPhase(phase: Phase) {
+    this.run.phase = phase;
+    this.send({ type: "phase", phase });
   }
 
   private ensureRunning() {
@@ -146,7 +171,25 @@ class Connection implements Rpc {
   }
 
   private async runLoop() {
-    const server = makeServer(this, (name, input, result, ok, toolUseId) => {
+    const producer = this.mode === "producer";
+    const reviewPlan = producer
+      ? async (plan: Plan) => {
+          const planId = `plan-${Date.now().toString(36)}`;
+          this.run.revision += 1;
+          const revised: Plan = { ...plan, revision: this.run.revision };
+          // Register the wait before announcing the plan: an answer that arrives in the same tick
+          // would otherwise find nothing pending and be reported as stale.
+          const answered = this.run.await_decision(planId);
+          this.send({ type: "plan_proposed", plan_id: planId, plan: revised });
+          this.send({ type: "phase", phase: "awaiting_approval" });
+          const outcome = await answered;
+          this.setPhase(outcome.decision === "approve" ? "executing" : "planning");
+          return decisionResult(outcome, this.run.revision);
+        }
+      : undefined;
+    const server = makeServer(
+      this,
+      (name, input, result, ok, toolUseId) => {
       this.send({
         type: "tool_result",
         name,
@@ -155,19 +198,25 @@ class Connection implements Rpc {
         agent: toolUseId ? this.agentOf.get(toolUseId) : undefined,
         ok,
       });
-    });
-    const resume = this.sessionId || undefined;
+      },
+      reviewPlan,
+    );
+    const resume = this.sessionIds[this.mode] || undefined;
     log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${this.model ?? "default"}`);
     this.q = query({
       prompt: this.inbox,
       options: {
-        systemPrompt: systemPrompt(),
+        systemPrompt: systemPrompt(this.mode),
         model: this.model,
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },
-        allowedTools: TOOL_NAMES.map((t) => `mcp__flvstx__${t}`),
+        allowedTools: [...TOOL_NAMES, ...(producer ? ["propose_plan"] : [])].map((t) => `mcp__flvstx__${t}`),
+        // `allowedTools` only auto-approves; this list is the actual fence.
         disallowedTools: ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite", "Agent"],
+        // Producer mode cannot write until the user approves the plan, and that is enforced here
+        // rather than asked for in the prompt.
+        hooks: producer ? { PreToolUse: [{ matcher: "mcp__flvstx__.*", hooks: [writeFence(this.run)], timeout: 10 }] } : undefined,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         includePartialMessages: true,
@@ -214,15 +263,15 @@ class Connection implements Rpc {
         }
         case "result": {
           turns = any.num_turns ?? turns;
-          this.sessionId = any.session_id ?? this.sessionId;
+          this.sessionIds[this.mode] = any.session_id ?? this.sessionIds[this.mode];
           this.turnActive = false;
           if (any.subtype === "success") {
-            this.send({ type: "done", session_id: this.sessionId, cost_usd: any.total_cost_usd, turns });
+            this.send({ type: "done", session_id: this.sessionIds[this.mode], cost_usd: any.total_cost_usd, turns, mode: this.mode });
           } else {
             const err = any.errors?.join("; ") || any.subtype || "unknown error";
             log("turn ended with", any.subtype, err);
             this.send({ type: "error", message: `turn ended: ${err}` });
-            this.send({ type: "done", session_id: this.sessionId, cost_usd: any.total_cost_usd, turns });
+            this.send({ type: "done", session_id: this.sessionIds[this.mode], cost_usd: any.total_cost_usd, turns, mode: this.mode });
           }
           break;
         }
@@ -237,12 +286,16 @@ class Connection implements Rpc {
     log("SDK session ended");
     this.running = false;
     this.turnActive = false;
+    this.run.reset();
+    if (this.mode === "producer") this.send({ type: "phase", phase: "idle" });
     this.q = null;
     // A fresh inbox for the next turn (the old one was consumed).
     this.inbox = new Inbox();
   }
 
   private dispose() {
+    // A parked plan would otherwise keep its tool call — and the turn — alive forever.
+    this.run.settleAll("cancel");
     this.inbox.close();
     if (this.q) this.q.interrupt().catch(() => {});
     for (const p of this.pending.values()) p.reject(new Error("connection closed"));

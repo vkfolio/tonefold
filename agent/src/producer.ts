@@ -1,0 +1,123 @@
+// Producer mode: the composer plans first, the user approves the plan, and only then may anything
+// be written. The approval is enforced here rather than asked for in a prompt — a PreToolUse hook
+// denies every mutating tool until the run reaches the `executing` phase.
+
+import type { HookInput, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
+import type { Phase, Plan, PlanDecision } from "./protocol.js";
+
+/** Tools that only read. Everything else in the flvstx server writes and needs an approved plan. */
+export const READ_TOOLS = new Set([
+  "get_session",
+  "get_notes",
+  "analyze",
+  "read_reference",
+  "list_layer_kinds",
+  "list_instruments",
+  "list_scales",
+  "suggest_chords",
+]);
+
+export const MAX_REVISIONS = 3;
+
+export interface PlanOutcome {
+  decision: PlanDecision;
+  notes?: string;
+}
+
+/**
+ * One producer turn's state. The phase is what the write fence reads, so it is the single place
+ * that decides whether the session can change.
+ */
+export class ProducerRun {
+  phase: Phase = "idle";
+  revision = 0;
+  planId: string | null = null;
+  private pending: { resolve: (o: PlanOutcome) => void } | null = null;
+
+  /** Parks until the user answers. Resolves (never rejects) so the tool always returns something. */
+  await_decision(planId: string): Promise<PlanOutcome> {
+    this.planId = planId;
+    this.phase = "awaiting_approval";
+    return new Promise((resolve) => {
+      this.pending = { resolve };
+    });
+  }
+
+  /** Answers a pending plan. Returns false when the id is stale (double click, old plan, reconnect). */
+  settle(planId: string, outcome: PlanOutcome): boolean {
+    if (!this.pending || this.planId !== planId) return false;
+    const { resolve } = this.pending;
+    this.pending = null;
+    resolve(outcome);
+    return true;
+  }
+
+  /** Ends any wait — used on cancel, disconnect and turn end so a parked tool can never hang. */
+  settleAll(decision: PlanDecision = "cancel") {
+    if (this.pending) {
+      const { resolve } = this.pending;
+      this.pending = null;
+      resolve({ decision });
+    }
+  }
+
+  get awaiting(): boolean {
+    return this.pending !== null;
+  }
+
+  reset() {
+    this.settleAll();
+    this.phase = "idle";
+    this.revision = 0;
+    this.planId = null;
+  }
+}
+
+/** What the model is told after the user answers. The wording is the producer's next instruction. */
+export function decisionResult(outcome: PlanOutcome, revision: number): string {
+  switch (outcome.decision) {
+    case "approve":
+      return (
+        "APPROVED. This plan is now the contract. Work through the steps in order, and do not add " +
+        "steps that are not in it — if you find you need one, do the planned work first and say so " +
+        "in your final report."
+      );
+    case "reject":
+      if (revision >= MAX_REVISIONS) {
+        return (
+          `The user has sent the plan back ${revision} times. Stop planning. Summarise in one short ` +
+          "paragraph where you and the user disagree, and end your turn without writing anything."
+        );
+      }
+      return (
+        `PLAN SENT BACK (revision ${revision} of ${MAX_REVISIONS}). The user wants: ` +
+        `${outcome.notes?.trim() || "(no note given — ask for one in a single short line)"}\n\n` +
+        "Revise the plan and call propose_plan again. Do not write anything yet."
+      );
+    case "cancel":
+    default:
+      return "CANCELLED by the user. Stop now, write nothing, and end your turn with one short line.";
+  }
+}
+
+/**
+ * The write fence. Registered for `mcp__flvstx__*` only, so anything reaching it is one of our
+ * tools. Reads are always allowed — the producer has to see the song to plan it — but nothing may
+ * change the session until a plan has been approved.
+ */
+export function writeFence(run: ProducerRun) {
+  return async (input: HookInput) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const tool = String((input as PreToolUseHookInput).tool_name).replace(/^mcp__flvstx__/, "");
+    if (READ_TOOLS.has(tool) || tool === "propose_plan" || run.phase === "executing") return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse" as const,
+        permissionDecision: "deny" as const,
+        permissionDecisionReason:
+          `'${tool}' would change the song, and the plan has not been approved yet. ` +
+          "Call propose_plan first and wait for the user's answer.",
+      },
+    };
+  };
+}

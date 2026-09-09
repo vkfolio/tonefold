@@ -17,6 +17,57 @@ use tungstenite::{Message, WebSocket};
 
 pub const DEFAULT_PORT: u16 = 7878;
 
+/// One thing the producer intends to do. `targets` is what it will write, as `layer@section`,
+/// so approving a plan is approving a list of changes rather than a paragraph of prose.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanStep {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanSection {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub bars: u32,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+/// What the producer proposes before it is allowed to change anything.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Plan {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub tempo: Option<f32>,
+    #[serde(default)]
+    pub time_signature: Option<String>,
+    #[serde(default)]
+    pub style: Option<String>,
+    #[serde(default)]
+    pub form: Vec<PlanSection>,
+    #[serde(default)]
+    pub layers: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<PlanStep>,
+    #[serde(default)]
+    pub revision: u32,
+    #[serde(default)]
+    pub risks: Vec<String>,
+}
+
 /// Events delivered to the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -48,6 +99,12 @@ pub enum AgentEvent {
     Done { #[serde(default)] session_id: String, #[serde(default)] cost_usd: Option<f64>, #[serde(default)] turns: u32, #[serde(default)] mode: Option<String> },
     Error { message: String, #[serde(default)] code: Option<String>, #[serde(default)] agent: Option<String> },
     Pong,
+    /// The producer wants approval before it writes anything.
+    PlanProposed { plan_id: String, #[serde(default)] plan: Plan },
+    /// The answer landed (or was too late — `decision: "stale"`).
+    PlanResolved { plan_id: String, decision: String, #[serde(default)] notes: Option<String> },
+    /// Where a producer turn is: idle, planning, awaiting_approval, executing.
+    Phase { phase: String },
     /// Synthesised locally.
     #[serde(skip)]
     Connected,
@@ -105,8 +162,21 @@ impl AgentClient {
 
     /// Sends a chat turn, optionally switching the model ("sonnet", "opus", or a full model id).
     pub fn send_user_message_with_model(&self, text: &str, context: &str, model: Option<&str>) {
+        self.send_user_message_in(text, context, model, "composer");
+    }
+
+    /// `mode` picks the persona and tool set on the sidecar: "composer" answers directly,
+    /// "producer" plans first and waits for approval.
+    pub fn send_user_message_in(&self, text: &str, context: &str, model: Option<&str>, mode: &str) {
         let sid = self.session_id.lock().ok().and_then(|s| s.clone());
-        let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid, "model": model });
+        let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid, "model": model, "mode": mode });
+        let _ = self.tx.send(Outgoing::Text(msg.to_string()));
+    }
+
+    /// Answers a proposed plan. Not a user message: the producer is parked inside a tool call, so
+    /// the sidecar's one-turn gate would reject it and queueing it would deadlock.
+    pub fn send_plan_decision(&self, plan_id: &str, decision: &str, notes: Option<&str>) {
+        let msg = serde_json::json!({ "type": "plan_decision", "plan_id": plan_id, "decision": decision, "notes": notes });
         let _ = self.tx.send(Outgoing::Text(msg.to_string()));
     }
 
@@ -334,8 +404,36 @@ mod tests {
     /// unknown event must be ignorable rather than an error in the user's transcript.
     #[test]
     fn unknown_frames_are_tolerated() {
-        let ev: AgentEvent = serde_json::from_str(r#"{"type":"plan_proposed","plan_id":"p1","plan":{}}"#).expect("unknown tag must parse");
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"subagent_start","agent":"harmony-form"}"#).expect("unknown tag must parse");
         assert!(matches!(ev, AgentEvent::Unknown));
+    }
+
+    /// A plan with only the fields the producer bothered to fill in still loads, and an empty one
+    /// does not panic the card that renders it.
+    #[test]
+    fn plans_parse_from_a_partial_frame() {
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"plan_proposed","plan_id":"p1","plan":{}}"#).unwrap();
+        match ev {
+            AgentEvent::PlanProposed { plan_id, plan } => {
+                assert_eq!(plan_id, "p1");
+                assert!(plan.steps.is_empty() && plan.summary.is_empty() && plan.tempo.is_none());
+            }
+            other => panic!("expected a proposed plan, got {other:?}"),
+        }
+        let ev: AgentEvent = serde_json::from_str(
+            r#"{"type":"plan_proposed","plan_id":"p2","plan":{"summary":"lofi","tempo":82,"revision":2,"form":[{"name":"Verse","bars":8}],"steps":[{"id":"s1","owner":"rhythm-section","title":"Drums","detail":"","targets":["drums@verse"]}]}}"#,
+        )
+        .unwrap();
+        match ev {
+            AgentEvent::PlanProposed { plan, .. } => {
+                assert_eq!(plan.revision, 2);
+                assert_eq!(plan.tempo, Some(82.0));
+                assert_eq!(plan.form[0].bars, 8);
+                assert_eq!(plan.steps[0].targets, vec!["drums@verse".to_string()]);
+                assert!(plan.risks.is_empty());
+            }
+            other => panic!("expected a proposed plan, got {other:?}"),
+        }
     }
 
     /// ...and a known frame that gains fields must still load on an older build.

@@ -3,7 +3,7 @@ import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import type { Rpc } from "./protocol.js";
+import type { Plan, Rpc } from "./protocol.js";
 import { AGENT_ROOT } from "./prompt.js";
 
 const TRACK = z.string().describe("layer id (e.g. 'melody', 'arp2'), layer name, or kind name (first layer of that kind)");
@@ -138,7 +138,10 @@ export async function readReference(input: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: body }] };
 }
 
-export function makeServer(rpc: Rpc, onCall?: ToolReport) {
+/** Producer mode supplies this; it parks until the user answers the plan. */
+export type PlanReviewer = (plan: Plan) => Promise<string>;
+
+export function makeServer(rpc: Rpc, onCall?: ToolReport, reviewPlan?: PlanReviewer) {
   const genParams = z
     .object({
       style: z.string().optional().describe("style hint, e.g. pop, lofi, trap, house, cinematic, kids"),
@@ -157,6 +160,41 @@ export function makeServer(rpc: Rpc, onCall?: ToolReport) {
     })
     .optional();
 
+  const planTools = reviewPlan
+    ? [
+      tool(
+          "propose_plan",
+          "Show the user what you intend to do and wait for their answer. Nothing can be written until they approve. Returns 'approved' (build it), the user's notes (revise and propose again), or 'cancelled' (stop). Call this once you know the song you want to make — not before you have read the session.",
+          {
+            summary: z.string().describe("one paragraph a musician would recognise: what this song will be"),
+            key: z.string().optional(),
+            tempo: z.number().optional(),
+            time_signature: z.string().optional(),
+            style: z.string().optional(),
+            form: z.array(z.object({ name: z.string(), bars: z.number().int().min(1).max(128), role: z.string().optional() })).optional(),
+            layers: z.array(z.string()).optional().describe("layer kinds the song will use"),
+            steps: z
+              .array(
+                z.object({
+                  id: z.string().describe("stable id, e.g. 's1'"),
+                  owner: z.enum(["producer", "harmony-form", "melody-topline", "rhythm-section", "arrangement-mix"]).describe("who does it; 'producer' means you"),
+                  title: z.string().describe("short, musical"),
+                  detail: z.string().describe("one or two sentences: what and why"),
+                  targets: z.array(z.string()).describe("what it writes, as layer@section: 'bass@verse', 'drums@*'"),
+                }),
+              )
+              .min(1)
+              .describe("in the order you will do them; dependencies come first"),
+            risks: z.array(z.string()).optional().describe("anything being overwritten, or a strong choice the user may not expect"),
+          },
+          async (input: Record<string, unknown>, extra: unknown) => {
+            const verdict = await reviewPlan(input as unknown as Plan);
+            onCall?.("propose_plan", input, verdict, true, (extra as { toolUseId?: string } | undefined)?.toolUseId);
+            return { content: [{ type: "text" as const, text: verdict }] };
+          },
+        ),
+      ]
+    : [];
   const tools = [
     tool("get_session", "Read the current session: key, tempo, style, sections with chords and which tracks have notes. Call this first in a conversation and after the user says they edited something.", { detail: z.enum(["summary", "full"]).optional() }, wrap(rpc, "get_session", onCall)),
     tool("get_notes", "Read one track's notes in one section as compact notation plus an analysis.", { track: TRACK, section: z.string() }, wrap(rpc, "get_notes", onCall)),
@@ -259,6 +297,7 @@ export function makeServer(rpc: Rpc, onCall?: ToolReport) {
       },
     ),
     tool("export", "Write the current song (or one section) as latest.json + .mid files for FL Studio (the FLVSTX Import piano-roll script reads them). Only when the user asks to export/commit.", { section: z.string().optional() }, wrap(rpc, "export", onCall)),
+    ...planTools,
   ];
   return createSdkMcpServer({ name: "flvstx", version: "0.1.0", tools });
 }

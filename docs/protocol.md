@@ -7,34 +7,95 @@ agent process. All frames are JSON text.
 The plugin is the source of truth for the session. The agent never keeps notes; it reads and writes
 through RPCs that the client answers by calling `flvstx_core::ops::dispatch`.
 
+The two sides ship separately, so the wire is additive: every field is optional with a default, and
+an unknown `type` deserialises to `AgentEvent::Unknown` and is ignored rather than surfaced as an
+error (`crates/flvstx-ipc/src/lib.rs`).
+
 ## Client → Agent
 
 | type | fields | meaning |
 |---|---|---|
-| `user_message` | `text`, `context` (compact session summary string), `session_id?` | a chat turn from the user |
+| `user_message` | `text`, `context` (compact session summary string), `session_id?`, `model?`, `mode?` | a chat turn from the user |
+| `plan_decision` | `plan_id`, `decision` (`approve` \| `reject` \| `cancel`), `notes?` | answers a proposed plan; **not** a user message, because the producer is parked inside a tool call |
 | `rpc_result` | `id`, `ok`, `result?`, `error?` | answer to an agent `rpc` |
-| `cancel` | | abort the current turn |
+| `cancel` | | abort the current turn (also settles a pending plan as `cancel`) |
 | `ping` | | keep-alive |
+
+`mode` picks the persona and tool set: `composer` (default) answers straight away, `producer` plans
+first and may write nothing until the plan is approved. The two cannot share one SDK session —
+`agents`, `allowedTools`, `hooks` and `systemPrompt` are fixed when a query is created — so switching
+mode ends the current session and resumes the other one; the sidecar keeps one session id per mode.
 
 ## Agent → Client
 
 | type | fields | meaning |
 |---|---|---|
-| `ready` | `backend` (`sdk` \| `cli`), `version` | sent once after connecting |
-| `assistant_delta` | `text` | streamed text fragment |
-| `assistant_message` | `text` | a complete assistant text block |
-| `tool_call` | `name`, `input` | the agent is invoking a composer tool (for UI chips) |
-| `tool_result` | `name`, `summary` | short result text (for UI chips) |
+| `ready` | `backend` (`sdk` \| `cli`), `version`, `modes?` | sent once after connecting |
+| `assistant_delta` | `text`, `agent?` | streamed text fragment |
+| `assistant_message` | `text`, `agent?` | a complete assistant text block |
+| `tool_call` | `name`, `input`, `tool_use_id?`, `agent?` | the agent is invoking a composer tool (for UI chips) |
+| `tool_result` | `name`, `summary`, `tool_use_id?`, `ok?`, `agent?` | short result text (for UI chips) |
+| `plan_proposed` | `plan_id`, `plan` | the producer wants approval before it writes anything |
+| `plan_resolved` | `plan_id`, `decision`, `notes?` | the answer landed; `decision: "stale"` means it was too late |
+| `phase` | `phase` (`idle` \| `planning` \| `awaiting_approval` \| `executing`) | where a producer turn is; drives the panel's status, which `turn_active` alone cannot express |
 | `rpc` | `id`, `method`, `params` | run a session operation and reply with `rpc_result` |
-| `done` | `session_id`, `cost_usd?`, `turns` | the turn finished |
-| `error` | `message` | the turn failed |
+| `done` | `session_id`, `cost_usd?`, `turns`, `mode?` | the turn finished |
+| `error` | `message`, `code?` | the turn failed |
 | `pong` | | |
+
+`agent` names the specialist a frame came from, and is absent for the producer and the composer.
+
+### A producer turn
+
+```
+user_message {mode: "producer"}  →   phase {planning}
+                                     tool_call get_session … (reads only; writes are denied)
+                                     plan_proposed {plan_id, plan}
+                                     phase {awaiting_approval}      ← nothing is running
+plan_decision {approve}          →   phase {executing}
+                                     tool_call … (writes now allowed)
+                                     done
+```
+
+`reject` returns the user's `notes` to the model, which revises and proposes again **in the same
+turn** — no new user message, no lost context. Three sent-backs and the producer is told to stop.
+`cancel`, a disconnect, or the turn ending settles a pending plan, so a parked plan can never
+outlive its turn (`agent/src/producer.ts`, tested in `agent/src/producer.test.ts`).
+
+The approval is enforced by a `PreToolUse` hook, not by the prompt: until the phase is `executing`,
+every `mcp__flvstx__*` tool outside the read set is denied with a reason the model can act on.
+
+### `plan`
+
+```jsonc
+{
+  "summary": "…what this song will be, in a musician's words",
+  "key": "F minor", "tempo": 82, "time_signature": "4/4", "style": "lofi",
+  "form": [{ "name": "Intro", "bars": 8, "role": "intro" }],
+  "layers": ["chords", "bass", "drums", "melody"],
+  "steps": [{
+    "id": "s1",
+    "owner": "producer | harmony-form | melody-topline | rhythm-section | arrangement-mix",
+    "title": "Drums and bass together",
+    "detail": "one or two sentences: what and why",
+    "targets": ["drums@verse", "bass@verse"]   // every layer@section it will write
+  }],
+  "risks": ["anything being overwritten, or a strong choice the user may not expect"],
+  "revision": 1
+}
+```
+
+`targets` are the point: approving a plan is approving a list of changes, not a paragraph of prose.
 
 ## RPC methods (see `crates/flvstx-core/src/ops.rs`)
 
 `get_session`, `get_notes`, `set_key_tempo`, `set_form`, `set_section`, `copy_section`, `set_chords`,
-`suggest_chords`, `set_notes`, `generate`, `generate_all`, `humanize`, `analyze`, `set_lyrics`, `lock`,
-`clear`, `transpose`, `undo`, `redo`, `export`, `list_scales`.
+`suggest_chords`, `harmonize`, `set_notes`, `generate`, `generate_all`, `generate_song`, `humanize`,
+`analyze`, `set_lyrics`, `lock`, `clear`, `transpose`, `undo`, `redo`, `export`, `add_layer`,
+`remove_layer`, `set_arrangement`, `list_layer_kinds`, `set_instrument`, `read_reference`, `vary`,
+`list_instruments`, `set_groove`, `list_scales`.
+
+`propose_plan` is not an RPC: it runs inside the sidecar and blocks until the user answers.
 
 Every mutating RPC snapshots the session for undo. Errors are returned as `{ok:false, error}` and
 surfaced to the model as tool errors so it can correct itself.

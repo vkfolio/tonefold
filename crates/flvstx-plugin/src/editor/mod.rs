@@ -62,6 +62,10 @@ pub struct EditorState {
     take_seed: u64,
     /// Chat model: "default", "sonnet", "opus".
     pub model: String,
+    /// Where a message goes: the one-shot composer, or the producer that plans first.
+    pub mode: String,
+    /// Producer phase from the sidecar: idle | planning | awaiting_approval | executing.
+    pub phase: String,
     show_arrangement: bool,
     show_composer: bool,
     autosave_pending: bool,
@@ -217,9 +221,30 @@ impl EditorState {
         let model = if self.model == "default" { None } else { Some(self.model.clone()) };
         if let Ok(g) = self.agent.lock() {
             if let Some(a) = g.as_ref() {
-                a.send_user_message_with_model(text, &ctx, model.as_deref());
+                a.send_user_message_in(text, &ctx, model.as_deref(), &self.mode);
                 self.turn_active = true;
                 self.streaming.clear();
+            }
+        }
+    }
+
+    /// Answers the producer's plan. Goes as its own message: the producer is parked inside a tool
+    /// call, so this can never travel as a user message.
+    pub fn answer_plan(&mut self, shared: &Shared, decision: &str, notes: Option<&str>) {
+        let id = shared.plan.lock().ok().and_then(|p| p.as_ref().map(|p| p.id.clone()));
+        let Some(id) = id else { return };
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.send_plan_decision(&id, decision, notes);
+            }
+        }
+        if let Ok(mut p) = shared.plan.lock() {
+            if let Some(p) = p.as_mut() {
+                p.status = match decision {
+                    "approve" => "executing".into(),
+                    "reject" => "sent_back".into(),
+                    _ => "cancelled".into(),
+                };
             }
         }
     }
@@ -401,6 +426,7 @@ impl EditorState {
                 AgentEvent::SessionChanged => {}
                 AgentEvent::Done { session_id, .. } => {
                     self.turn_active = false;
+                    self.phase = "idle".into();
                     self.streaming.clear();
                     if !session_id.is_empty() {
                         if let Ok(mut s) = shared.agent_session_id.lock() {
@@ -411,6 +437,35 @@ impl EditorState {
                 AgentEvent::Error { message, .. } => {
                     self.turn_active = false;
                     shared.push_chat(ChatRole::System, format!("error: {message}"));
+                }
+                AgentEvent::PlanProposed { plan_id, plan } => {
+                    shared.push_chat_from(ChatRole::Assistant, plan_markdown(&plan), Some("plan".into()));
+                    if let Ok(mut p) = shared.plan.lock() {
+                        *p = Some(crate::state::PlanState { id: plan_id, plan, status: "awaiting_approval".into() });
+                    }
+                }
+                AgentEvent::PlanResolved { decision, .. } => {
+                    if decision == "stale" {
+                        shared.push_chat(ChatRole::System, "that plan was already answered");
+                    }
+                }
+                AgentEvent::Phase { phase } => {
+                    if phase == "executing" {
+                        if let Ok(mut p) = shared.plan.lock() {
+                            if let Some(p) = p.as_mut() {
+                                p.status = "executing".into();
+                            }
+                        }
+                    }
+                    if phase == "idle" {
+                        if let Ok(mut p) = shared.plan.lock() {
+                            // Keep a finished plan visible; drop one that never got approved.
+                            if p.as_ref().map(|p| p.status == "awaiting_approval" || p.status == "cancelled").unwrap_or(false) {
+                                *p = None;
+                            }
+                        }
+                    }
+                    self.phase = phase;
                 }
                 AgentEvent::Pong => {}
                 // Frames from a newer sidecar than this build: already logged, nothing to show.
@@ -521,6 +576,8 @@ fn initial_state(params: Arc<FlvstxParams>) -> EditorState {
         take_idx: 0,
         take_seed: 100,
         model: "default".into(),
+        mode: "composer".into(),
+        phase: "idle".into(),
         show_arrangement: false,
         show_composer: true,
         autosave_pending: false,
@@ -1645,6 +1702,45 @@ fn generation_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     });
 }
 
+/// A proposed plan, written the way the producer would say it: the record first, then the steps
+/// with what each one will touch. Rendered in the transcript, where there is room to read it.
+fn plan_markdown(plan: &flvstx_ipc::Plan) -> String {
+    let mut out = String::from("**Plan**");
+    if plan.revision > 1 {
+        out.push_str(&format!(" (revision {})", plan.revision));
+    }
+    let mut facts: Vec<String> = Vec::new();
+    if let Some(k) = &plan.key { facts.push(k.clone()); }
+    if let Some(t) = plan.tempo { facts.push(format!("{t:.0} BPM")); }
+    if let Some(ts) = &plan.time_signature { facts.push(ts.clone()); }
+    if let Some(st) = &plan.style { facts.push(st.clone()); }
+    if !facts.is_empty() {
+        out.push_str(&format!(" — {}", facts.join(" · ")));
+    }
+    out.push_str("\n\n");
+    if !plan.summary.is_empty() {
+        out.push_str(&plan.summary);
+        out.push_str("\n\n");
+    }
+    if !plan.form.is_empty() {
+        out.push_str(&format!("**Form:** {}\n\n", plan.form.iter().map(|s| format!("{} x{}", s.name, s.bars)).collect::<Vec<_>>().join(" - ")));
+    }
+    for (i, step) in plan.steps.iter().enumerate() {
+        out.push_str(&format!("{}. **{}**", i + 1, step.title));
+        if !step.targets.is_empty() {
+            out.push_str(&format!(" — `{}`", step.targets.join("`, `")));
+        }
+        out.push('\n');
+        if !step.detail.is_empty() {
+            out.push_str(&format!("    {}\n", step.detail));
+        }
+    }
+    for risk in &plan.risks {
+        out.push_str(&format!("\n> {risk}\n"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod ui_tests {
     use super::*;
@@ -1675,6 +1771,61 @@ mod ui_tests {
                 }).expect("send button should be rendered");
                 assert!(send.pos.y >= 0.0 && send.pos.y + send.galley.size().y <= 620.0,
                     "input must remain visible at scale {scale}");
+            }
+        }
+    }
+
+    /// A twelve-step plan must not push the answer buttons — or the input — off the panel: an
+    /// unanswerable plan wedges the whole turn.
+    #[test]
+    fn a_long_plan_stays_answerable() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Flvstx::default().params.clone());
+            st.ui_scale = scale;
+            st.mode = "producer".into();
+            st.turn_active = true;
+            st.phase = "awaiting_approval".into();
+            let shared = Shared::new(flvstx_core::Session::default());
+            let plan = flvstx_ipc::Plan {
+                summary: "A 16-bar lo-fi sketch with an intro and a verse, groove-led.".into(),
+                key: Some("F minor".into()),
+                tempo: Some(82.0),
+                steps: (1..=12)
+                    .map(|i| flvstx_ipc::PlanStep {
+                        id: format!("s{i}"),
+                        owner: "rhythm-section".into(),
+                        title: format!("Step {i}: write something musical"),
+                        detail: "One or two sentences about what this step does and why it comes here.".into(),
+                        targets: vec!["drums@verse".into(), "bass@verse".into()],
+                    })
+                    .collect(),
+                revision: 2,
+                ..Default::default()
+            };
+            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "awaiting_approval".into() });
+
+            let mut seen = Vec::new();
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                seen = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos.y, text.galley.size().y)),
+                    _ => None,
+                }).collect();
+            }
+            // The note box has to stay reachable too — "Revise" without somewhere to type is a
+            // dead end.
+            for label in ["Approve", "Revise", "Stop", "Type what to change, then Revise above..."] {
+                let (_, y, h) = seen.iter().find(|(t, ..)| t == label)
+                    .unwrap_or_else(|| panic!("{label} should be rendered at scale {scale}"));
+                assert!(*y >= 0.0 && y + h <= 620.0, "{label} must stay on screen at scale {scale}");
             }
         }
     }
@@ -1747,3 +1898,5 @@ Press **Play** to hear it. Select a layer to explore its notes, or tell me what 
         }
     }
 }
+
+

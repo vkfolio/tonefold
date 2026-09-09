@@ -4,5 +4,6 @@
     "outDir": "dist", "rootDir": "src", "strict": true, "esModuleInterop": true,
     "skipLibCheck": true, "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
 }

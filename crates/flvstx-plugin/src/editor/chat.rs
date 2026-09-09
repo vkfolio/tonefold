@@ -1,7 +1,7 @@
 //! Chat panel: transcript, tool-call chips, input box, quick actions, agent status.
 
 use super::{theme, EditorState};
-use crate::state::{ChatRole, Shared};
+use crate::state::{ChatRole, PlanState, Shared};
 use nih_plug_egui::egui::{self, Color32, RichText};
 
 pub const QUICK_ACTIONS: &[(&str, &str)] = &[
@@ -16,11 +16,36 @@ pub const QUICK_ACTIONS: &[(&str, &str)] = &[
 ];
 
 pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
-    theme::eyebrow(ui, "CREATIVE PARTNER");
+    // At large UI scales in a narrow rack the header alone can eat the panel, and the input has to
+    // stay reachable — so the title shrinks before the writing surface does.
+    let roomy = ui.available_height() > 300.0 * st.ui_scale;
+    if roomy {
+        theme::eyebrow(ui, "CREATIVE PARTNER");
+    }
     let connected = st.agent_connected();
+    let producer = st.mode == "producer";
+    let waiting = producer && st.phase == "awaiting_approval";
     ui.horizontal_wrapped(|ui| {
-        ui.heading("Composer");
-        let (label, color) = if st.turn_active {
+        // The toggle is the title. A mode change restarts the sidecar session (different tools and
+        // persona), so it is only offered between turns.
+        for (mode, hint) in [
+            ("Composer", "Answers straight away - best for one quick change"),
+            ("Producer", "Plans the work and waits for your approval before writing anything"),
+        ] {
+            let selected = st.mode.eq_ignore_ascii_case(mode);
+            let text = RichText::new(mode).color(if selected { theme::TEXT } else { theme::MUTED });
+            let text = if roomy { text.heading() } else { text.strong() };
+            if ui.add_enabled(!st.turn_active, egui::SelectableLabel::new(selected, text)).on_hover_text(hint).clicked() {
+                st.mode = mode.to_lowercase();
+            }
+        }
+        let (label, color) = if waiting {
+            ("Waiting for you", Color32::from_rgb(143, 200, 218))
+        } else if producer && st.turn_active && st.phase == "planning" {
+            ("Planning", Color32::from_rgb(240, 200, 100))
+        } else if producer && st.turn_active {
+            ("Building", Color32::from_rgb(240, 200, 100))
+        } else if st.turn_active {
             ("Composing", Color32::from_rgb(240, 200, 100))
         } else if connected {
             ("Ready", Color32::from_rgb(120, 220, 170))
@@ -31,7 +56,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         };
         ui.label(RichText::new(label).color(color).small());
         if st.turn_active {
-            ui.spinner();
+            // Nothing is running while the plan sits with the user, so no spinner.
+            if !waiting { ui.spinner(); }
             if ui.small_button("Cancel").clicked() { st.cancel_turn(); }
         } else if !connected && ui.small_button("Connect").clicked() {
             st.ensure_agent(shared);
@@ -56,28 +82,37 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     let compact = ui.available_height() < 450.0;
     // Lay out the input first so a long transcript cannot push it off screen.
     egui::TopBottomPanel::bottom("composer-input").frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(0, 10))).show_inside(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.menu_button("Quick ideas", |ui| {
-                for (label, prompt) in QUICK_ACTIONS {
-                    if ui.add_enabled(!st.turn_active, egui::Button::new(*label)).clicked() {
-                        // Draft first: users can refine the request before sending it.
-                        st.input = prompt.to_string();
-                        ui.close_menu();
+        let plan = shared.plan.lock().ok().and_then(|p| p.clone());
+        if let Some(plan) = &plan {
+            plan_bar(ui, st, shared, plan);
+        }
+        let compact = compact || plan.is_some();
+        if !st.turn_active {
+            ui.horizontal_wrapped(|ui| {
+                ui.menu_button("Quick ideas", |ui| {
+                    for (label, prompt) in QUICK_ACTIONS {
+                        if ui.add_enabled(!st.turn_active, egui::Button::new(*label)).clicked() {
+                            // Draft first: users can refine the request before sending it.
+                            st.input = prompt.to_string();
+                            ui.close_menu();
+                        }
                     }
-                }
+                });
+                if !compact { ui.label(RichText::new("Shift+Enter for a new line").small().color(theme::MUTED)); }
             });
-            if !compact { ui.label(RichText::new("Shift+Enter for a new line").small().color(theme::MUTED)); }
-        });
+        }
         let response = egui::ScrollArea::vertical().id_salt("draft-scroll").max_height(if compact { 84.0 } else { 120.0 * st.ui_scale }).show(ui, |ui| {
         ui.add(egui::TextEdit::multiline(&mut st.input)
             .desired_rows(if compact { 2 } else { 3 }).desired_width(f32::INFINITY).margin(egui::vec2(12.0, 12.0))
             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
-            .hint_text("Describe a melody, mood, or change..."))
+            .hint_text(if waiting { "Type what to change, then Revise above..." } else { "Describe a melody, mood, or change..." }))
         }).inner;
         let enter = response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
         let ready = !st.turn_active && !st.input.trim().is_empty();
-        let send = ui.add_enabled(ready, egui::Button::new(RichText::new(if st.turn_active { "Composing..." } else { "Send request" }).strong().color(theme::CANVAS))
-            .fill(theme::ACCENT).min_size(egui::vec2(ui.available_width(), 32.0 * st.ui_scale))).clicked();
+        let busy_label = if producer { "Working..." } else { "Composing..." };
+        let send = !waiting
+            && ui.add_enabled(ready, egui::Button::new(RichText::new(if st.turn_active { busy_label } else if producer { "Plan this" } else { "Send request" }).strong().color(theme::CANVAS))
+                .fill(theme::ACCENT).min_size(egui::vec2(ui.available_width(), 32.0 * st.ui_scale))).clicked();
         if ready && (enter || send) {
             let text = st.input.trim().to_string();
             st.input.clear();
@@ -127,7 +162,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                         egui::Frame::new().fill(if user { Color32::from_rgb(33, 57, 64) } else { theme::SURFACE })
                             .corner_radius(10.0).inner_margin(14.0).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.label(RichText::new(if user { "YOU" } else { "COMPOSER" }).small().strong().color(Color32::from_rgb(143, 200, 218)));
+                                let author = if user {
+                                    "YOU".to_string()
+                                } else {
+                                    line.agent.clone().map(|a| a.replace('-', " ").to_uppercase()).unwrap_or_else(|| if producer { "PRODUCER".into() } else { "COMPOSER".into() })
+                                };
+                                ui.label(RichText::new(author).small().strong().color(Color32::from_rgb(143, 200, 218)));
                                 if user { ui.label(&line.text); }
                                 else { egui_commonmark::CommonMarkViewer::new().show(ui, &mut st.md_cache, &line.text); }
                             });
@@ -152,4 +192,54 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             });
         }
     });
+}
+
+/// The pinned answer to a proposed plan. The plan itself goes into the transcript, which scrolls —
+/// this bar does not, so a twelve-step plan can still be answered on a small panel.
+fn plan_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared, plan: &PlanState) {
+    let awaiting = plan.status == "awaiting_approval";
+    let (title, tint) = match plan.status.as_str() {
+        "awaiting_approval" => ("Plan — your call", Color32::from_rgb(143, 200, 218)),
+        "executing" => ("Plan approved — building", Color32::from_rgb(240, 200, 100)),
+        "sent_back" => ("Sent back — replanning", Color32::from_rgb(240, 200, 100)),
+        _ => ("Plan", theme::MUTED),
+    };
+    egui::Frame::new().fill(theme::SURFACE).corner_radius(10.0).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(title).small().strong().color(tint));
+            let steps = plan.plan.steps.len();
+            let rev = if plan.plan.revision > 1 { format!(", revision {}", plan.plan.revision) } else { String::new() };
+            ui.label(RichText::new(format!("{steps} steps{rev} — read it above")).small().color(theme::MUTED));
+        });
+        if awaiting {
+            ui.add_space(4.0);
+            // Columns, not a wrapped row: at large UI scales a wrapped button falls off the panel,
+            // and an unanswerable plan wedges the turn.
+            let note = st.input.trim().to_string();
+            let mut answer: Option<(&str, Option<String>)> = None;
+            ui.columns(3, |c| {
+                let w = c[0].available_width();
+                if c[0].add(egui::Button::new(RichText::new("Approve").strong().color(theme::CANVAS)).fill(theme::ACCENT).min_size(egui::vec2(w, 0.0)))
+                    .on_hover_text("Build it, in this order").clicked() {
+                    answer = Some(("approve", None));
+                }
+                let w = c[1].available_width();
+                if c[1].add(egui::Button::new("Revise").min_size(egui::vec2(w, 0.0)))
+                    .on_hover_text(if note.is_empty() { "Type what to change below, then click this" } else { note.as_str() }).clicked() {
+                    answer = Some(("reject", if note.is_empty() { None } else { Some(note.clone()) }));
+                }
+                let w = c[2].available_width();
+                if c[2].add(egui::Button::new("Stop").min_size(egui::vec2(w, 0.0)))
+                    .on_hover_text("Cancel this plan and write nothing").clicked() {
+                    answer = Some(("cancel", None));
+                }
+            });
+            if let Some((decision, notes)) = answer {
+                st.answer_plan(shared, decision, notes.as_deref());
+                if decision == "reject" { st.input.clear(); }
+            }
+        }
+    });
+    ui.add_space(8.0);
 }
