@@ -38,7 +38,7 @@ mode ends the current session and resumes the other one; the sidecar keeps one s
 | `plan_proposed` | `plan_id`, `plan` | the producer wants approval before it writes anything |
 | `plan_resolved` | `plan_id`, `decision`, `notes?` | the answer landed; `decision: "stale"` means it was too late |
 | `phase` | `phase` (`idle` \| `planning` \| `awaiting_approval` \| `executing`) | where a producer turn is; drives the panel's status, which `turn_active` alone cannot express |
-| `todos` | `items` (`content`, `status`) | the producer's whole checklist, every time it changes; empty when the turn ends |
+| `todos` | `items` (`content`, `status`) | progress through the approved plan, resent after every write |
 | `rpc` | `id`, `method`, `params` | run a session operation and reply with `rpc_result` |
 | `done` | `session_id`, `cost_usd?`, `turns`, `mode?` | the turn finished |
 | `error` | `message`, `code?` | the turn failed |
@@ -114,16 +114,23 @@ subagents are backgrounded by default, and two agents writing to one session pro
 
 ## RPC methods (see `crates/flvstx-core/src/ops.rs`)
 
-`get_session`, `get_notes`, `set_key_tempo`, `set_form`, `set_section`, `copy_section`, `set_chords`,
+`checkpoint`, `revert_to_checkpoint`, `get_session`, `get_notes`, `set_key_tempo`, `set_form`, `set_section`, `copy_section`, `set_chords`,
 `suggest_chords`, `harmonize`, `set_notes`, `generate`, `generate_all`, `generate_song`, `humanize`,
 `analyze`, `set_lyrics`, `lock`, `clear`, `transpose`, `undo`, `redo`, `export`, `add_layer`,
 `remove_layer`, `set_arrangement`, `list_layer_kinds`, `set_instrument`, `read_reference`, `vary`,
 `list_instruments`, `set_groove`, `list_scales`.
 
+The checklist is derived, not reported: a step counts as done when every `layer@section` in its
+`targets` appears in the ledger, so it cannot claim work nobody did. A step that writes nothing
+addressable (form, key, a final check) settles when a later step lands, or when the run ends.
+
 `propose_plan` and `verify_step` are not RPCs: they run inside the sidecar. `propose_plan` blocks
 until the user answers; `verify_step` reads the run's write ledger — every tool call that actually
 succeeded, with the agent that made it — so "did the specialist do it" is a tool result rather than
 a self-report.
+
+`checkpoint` and `revert_to_checkpoint` are the host's, not the model's: the plugin marks the
+session when a plan is approved, because a run makes far more changes than undo's 64-deep ring.
 
 Every mutating RPC snapshots the session for undo. Errors are returned as `{ok:false, error}` and
 surfaced to the model as tool errors so it can correct itself.
