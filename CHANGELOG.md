@@ -1,23 +1,42 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-09-09
 
-- Added piano-roll Pan mode, middle-mouse panning, visible time/pitch scrollbars, and independent
-  zoom controls. Navigation is bounded and pitch rows stay aligned while scrolling.
+A redesigned editor, and a piano roll you can actually navigate.
 
-- Redesigned editor with a shared navy/mint theme, a compact header, section cards,
-  instrument cards with note previews, and separate composition and playback controls.
-- Grouped consecutive composer tool calls into one expandable activity entry.
-- Piano roll now frames notes on section/layer changes and labels notes; Fit notes resets both axes.
-- Added a reproducible render of the actual egui geometry for visual QA.
+### Look and layout
 
-- Refined dark theme, larger controls, wrapping toolbars, scrollable sections and arrangement.
-- Collapsible composer with a pinned message input, starter ideas, editable quick-action drafts,
-  clearer message roles and expandable session updates.
-- Compact piano-roll help and corrected Fit zoom to use the full grid width.
-- Fixed delayed standalone autosave losing the final edit after a burst of changes.
-- Stop requests all-notes-off; Undo/Redo reflect available history; alternative takes only appear
-  for their selected layer. Restored UI scale now also applies to piano-roll rows at startup.
+- A shared navy and mint theme across the editor, a compact header, section cards, and instrument
+  cards that preview their notes.
+- Composition and playback controls are separated rather than sharing one bar; toolbars wrap and the
+  sections and arrangement views scroll, so nothing is cut off at small window sizes.
+- Larger controls throughout, and the restored UI scale now also applies to the piano-roll rows at
+  startup rather than only after a change.
+
+### Piano roll
+
+- Pan mode, middle-mouse panning, visible time and pitch scrollbars, and independent zoom for each
+  axis. Navigation is bounded, and pitch rows stay aligned while scrolling.
+- Notes are framed automatically when you switch section or layer, and are labelled; **Fit notes**
+  resets both axes and uses the full grid width.
+- Compact inline help instead of a wall of text.
+
+### Composer panel
+
+- Collapsible, with a pinned message input, starter ideas, and quick actions you can edit before
+  sending.
+- Consecutive tool calls collapse into one expandable activity entry, and message roles and session
+  updates read more clearly.
+
+### Fixes
+
+- The standalone's delayed autosave could lose the final edit after a burst of changes.
+- Stop now requests all-notes-off; Undo and Redo reflect the history that actually exists;
+  alternative takes only appear for the layer they belong to.
+
+### Development
+
+- A reproducible render of the real egui geometry, for visual QA of the editor.
 
 ## 1.0.0 — 2026-09-09
 
