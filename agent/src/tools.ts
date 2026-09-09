@@ -4,6 +4,7 @@ import { z } from "zod";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { Plan, Rpc } from "./protocol.js";
+import { matches, type WriteEntry } from "./producer.js";
 import { AGENT_ROOT } from "./prompt.js";
 
 const TRACK = z.string().describe("layer id (e.g. 'melody', 'arp2'), layer name, or kind name (first layer of that kind)");
@@ -141,7 +142,14 @@ export async function readReference(input: Record<string, unknown>) {
 /** Producer mode supplies this; it parks until the user answers the plan. */
 export type PlanReviewer = (plan: Plan) => Promise<string>;
 
-export function makeServer(rpc: Rpc, onCall?: ToolReport, reviewPlan?: PlanReviewer) {
+/** What producer mode adds: the plan handshake, and the ledger `verify_step` reads. */
+export interface ProducerTools {
+  reviewPlan: PlanReviewer;
+  ledger: () => readonly WriteEntry[];
+}
+
+export function makeServer(rpc: Rpc, onCall?: ToolReport, producerTools?: ProducerTools) {
+  const reviewPlan = producerTools?.reviewPlan;
   const genParams = z
     .object({
       style: z.string().optional().describe("style hint, e.g. pop, lofi, trap, house, cinematic, kids"),
@@ -191,6 +199,39 @@ export function makeServer(rpc: Rpc, onCall?: ToolReport, reviewPlan?: PlanRevie
             const verdict = await reviewPlan(input as unknown as Plan);
             onCall?.("propose_plan", input, verdict, true, (extra as { toolUseId?: string } | undefined)?.toolUseId);
             return { content: [{ type: "text" as const, text: verdict }] };
+          },
+        ),
+      ]
+    : [];
+  const verifyTools = producerTools
+    ? [
+        tool(
+          "verify_step",
+          "Check what a step actually wrote. Reads the host's ledger of changes that landed — not a report from the agent that made them — and returns, per target, who wrote it and with which tools, or that nothing did. Call it after every delegated step, with that step's targets.",
+          {
+            step_id: z.string().optional().describe("the plan step this is checking, for the log"),
+            targets: z.array(z.string()).min(1).describe("the step's targets, as layer@section: 'bass@verse', 'drums@*'"),
+          },
+          async (input: Record<string, unknown>, extra: unknown) => {
+            const targets = (input.targets as string[]) ?? [];
+            const writes = producerTools.ledger();
+            const lines = targets.map((t) => {
+              const hits = writes.filter((w) => matches(w, t));
+              if (!hits.length) return `${t}: NOTHING WRITTEN`;
+              const who = [...new Set(hits.map((h) => h.agent))].join(", ");
+              const how = [...new Set(hits.map((h) => h.tool))].join(", ");
+              return `${t}: written by ${who} (${how})`;
+            });
+            // Anything else that changed is worth knowing about: it is either a step doing more than
+            // it promised, or a target the plan named wrongly.
+            const extraWrites = writes.filter((w) => w.track && !targets.some((t) => matches(w, t)));
+            if (extraWrites.length) {
+              const others = [...new Set(extraWrites.map((w) => `${w.track}@${w.section ?? "*"} by ${w.agent}`))];
+              lines.push(`also touched this run: ${others.join("; ")}`);
+            }
+            const body = lines.join("\n");
+            onCall?.("verify_step", input, body, true, (extra as { toolUseId?: string } | undefined)?.toolUseId);
+            return { content: [{ type: "text" as const, text: body }] };
           },
         ),
       ]
@@ -298,6 +339,7 @@ export function makeServer(rpc: Rpc, onCall?: ToolReport, reviewPlan?: PlanRevie
     ),
     tool("export", "Write the current song (or one section) as latest.json + .mid files for FL Studio (the FLVSTX Import piano-roll script reads them). Only when the user asks to export/commit.", { section: z.string().optional() }, wrap(rpc, "export", onCall)),
     ...planTools,
+    ...verifyTools,
   ];
   return createSdkMcpServer({ name: "flvstx", version: "0.1.0", tools });
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::ErrorKind;
 use std::net::TcpStream;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -68,6 +69,16 @@ pub struct Plan {
     pub risks: Vec<String>,
 }
 
+/// One line of the producer's checklist, mirrored from its own TodoWrite call.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TodoItem {
+    #[serde(default)]
+    pub content: String,
+    /// "pending", "in_progress" or "completed".
+    #[serde(default)]
+    pub status: String,
+}
+
 /// Events delivered to the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -105,6 +116,8 @@ pub enum AgentEvent {
     PlanResolved { plan_id: String, decision: String, #[serde(default)] notes: Option<String> },
     /// Where a producer turn is: idle, planning, awaiting_approval, executing.
     Phase { phase: String },
+    /// The producer's checklist, in full, every time it changes.
+    Todos { #[serde(default)] items: Vec<TodoItem> },
     /// Synthesised locally.
     #[serde(skip)]
     Connected,
@@ -132,7 +145,10 @@ pub struct AgentClient {
     events: Receiver<AgentEvent>,
     connected: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
-    pub session_id: Arc<Mutex<Option<String>>>,
+    /// The SDK conversation to resume, per mode. The two modes are different sessions — different
+    /// tools, hooks and persona — so resuming one under the other's name would replay a transcript
+    /// written with tools that are no longer there.
+    pub sessions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AgentClient {
@@ -141,14 +157,14 @@ impl AgentClient {
         let (tx, rx) = channel::<Outgoing>();
         let (etx, events) = channel::<AgentEvent>();
         let connected = Arc::new(AtomicBool::new(false));
-        let session_id = Arc::new(Mutex::new(None));
+        let session_id = Arc::new(Mutex::new(HashMap::new()));
         let c2 = connected.clone();
         let sid = session_id.clone();
         let handle = std::thread::Builder::new()
             .name("flvstx-agent-ws".into())
             .spawn(move || run_client(port, store, rx, etx, c2, sid))
             .expect("spawn ws thread");
-        AgentClient { tx, events, connected, handle: Some(handle), session_id }
+        AgentClient { tx, events, connected, handle: Some(handle), sessions: session_id }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -168,7 +184,7 @@ impl AgentClient {
     /// `mode` picks the persona and tool set on the sidecar: "composer" answers directly,
     /// "producer" plans first and waits for approval.
     pub fn send_user_message_in(&self, text: &str, context: &str, model: Option<&str>, mode: &str) {
-        let sid = self.session_id.lock().ok().and_then(|s| s.clone());
+        let sid = self.sessions.lock().ok().and_then(|s| s.get(mode).cloned());
         let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid, "model": model, "mode": mode });
         let _ = self.tx.send(Outgoing::Text(msg.to_string()));
     }
@@ -206,7 +222,7 @@ impl Drop for AgentClient {
     }
 }
 
-fn run_client(port: u16, store: Arc<Mutex<Store>>, rx: Receiver<Outgoing>, etx: Sender<AgentEvent>, connected: Arc<AtomicBool>, sid: Arc<Mutex<Option<String>>>) {
+fn run_client(port: u16, store: Arc<Mutex<Store>>, rx: Receiver<Outgoing>, etx: Sender<AgentEvent>, connected: Arc<AtomicBool>, sid: Arc<Mutex<HashMap<String, String>>>) {
     let mut backoff = Duration::from_millis(300);
     // Messages sent before the socket is up are queued and flushed after connecting.
     let mut pending: Vec<String> = Vec::new();
@@ -241,7 +257,7 @@ fn run_client(port: u16, store: Arc<Mutex<Store>>, rx: Receiver<Outgoing>, etx: 
     }
 }
 
-fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, store: &Arc<Mutex<Store>>, rx: &Receiver<Outgoing>, etx: &Sender<AgentEvent>, sid: &Arc<Mutex<Option<String>>>) -> String {
+fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, store: &Arc<Mutex<Store>>, rx: &Receiver<Outgoing>, etx: &Sender<AgentEvent>, sid: &Arc<Mutex<HashMap<String, String>>>) -> String {
     if let tungstenite::stream::MaybeTlsStream::Plain(s) = socket.get_ref() {
         let _ = s.set_nonblocking(true);
     }
@@ -294,10 +310,10 @@ fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, 
                         }
                     }
                     Ok(ev) => {
-                        if let AgentEvent::Done { session_id, .. } = &ev {
+                        if let AgentEvent::Done { session_id, mode, .. } = &ev {
                             if !session_id.is_empty() {
                                 if let Ok(mut g) = sid.lock() {
-                                    *g = Some(session_id.clone());
+                                    g.insert(mode.clone().unwrap_or_else(|| "composer".into()), session_id.clone());
                                 }
                             }
                         }

@@ -33,6 +33,9 @@ user who would touch what. If your brief seems to need one, do your part and say
   writing block triads by hand.
 - **Rhythm is harmony too.** Where a chord changes — on the bar, pushed an eighth early, held over —
   is most of what makes a progression sound like a genre.
+- **Two takes, then move on.** If a comp is in the wrong octave, `transpose` it; if it is too busy,
+  change `density` or `energy`. Rerolling seeds hoping for a better one is how a step burns its
+  whole turn budget and still lands where it started.
 - **Leave room.** Chords in the middle register, nothing muddy below C3, and space where the topline
   will sit. You are writing the floor somebody else stands on.
 - **Match the extensions to the style:** 7ths and 9ths for lo-fi, jazz, R&B and neo-soul; triads and

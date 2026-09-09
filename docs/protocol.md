@@ -38,6 +38,7 @@ mode ends the current session and resumes the other one; the sidecar keeps one s
 | `plan_proposed` | `plan_id`, `plan` | the producer wants approval before it writes anything |
 | `plan_resolved` | `plan_id`, `decision`, `notes?` | the answer landed; `decision: "stale"` means it was too late |
 | `phase` | `phase` (`idle` \| `planning` \| `awaiting_approval` \| `executing`) | where a producer turn is; drives the panel's status, which `turn_active` alone cannot express |
+| `todos` | `items` (`content`, `status`) | the producer's whole checklist, every time it changes; empty when the turn ends |
 | `rpc` | `id`, `method`, `params` | run a session operation and reply with `rpc_result` |
 | `done` | `session_id`, `cost_usd?`, `turns`, `mode?` | the turn finished |
 | `error` | `message`, `code?` | the turn failed |
@@ -81,8 +82,8 @@ they would interleave into the producer's live bubble.
 | `rhythm-section` | `drums`, `percussion`, `bass`, `sub` |
 | `arrangement-mix` | presence, instruments, energy, humanization — every layer |
 
-Only `harmony-form` is registered so far; the producer does the rest of the work itself, and the
-plan's `owner` still names the craft each step belongs to.
+`arrangement-mix` runs twice: a roster pass that creates the layers and sets who plays where before
+anything is written, and a polish pass after everything is.
 
 The same hook enforces those boundaries: a specialist's write to a layer outside its domain is
 denied, naming the owner, and the run continues. Reads are never restricted — nobody can write music
@@ -119,7 +120,10 @@ subagents are backgrounded by default, and two agents writing to one session pro
 `remove_layer`, `set_arrangement`, `list_layer_kinds`, `set_instrument`, `read_reference`, `vary`,
 `list_instruments`, `set_groove`, `list_scales`.
 
-`propose_plan` is not an RPC: it runs inside the sidecar and blocks until the user answers.
+`propose_plan` and `verify_step` are not RPCs: they run inside the sidecar. `propose_plan` blocks
+until the user answers; `verify_step` reads the run's write ledger — every tool call that actually
+succeeded, with the agent that made it — so "did the specialist do it" is a tool result rather than
+a self-report.
 
 Every mutating RPC snapshots the session for undo. Errors are returned as `{ok:false, error}` and
 surfaced to the model as tool errors so it can correct itself.

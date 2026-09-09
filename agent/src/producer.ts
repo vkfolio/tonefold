@@ -3,7 +3,7 @@
 // denies every mutating tool until the run reaches the `executing` phase.
 
 import type { HookInput, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
-import type { Phase, Plan, PlanDecision } from "./protocol.js";
+import type { Phase, Plan, PlanDecision, TodoItem } from "./protocol.js";
 import { DOMAIN, kindOf } from "./specialists.js";
 
 /** Tools that only read. Everything else in the flvstx server writes and needs an approved plan. */
@@ -16,6 +16,7 @@ export const READ_TOOLS = new Set([
   "list_instruments",
   "list_scales",
   "suggest_chords",
+  "verify_step",
 ]);
 
 export const MAX_REVISIONS = 3;
@@ -41,9 +42,26 @@ export class ProducerRun {
   phase: Phase = "idle";
   revision = 0;
   planId: string | null = null;
+  /** The approved plan, so progress can be read against what the user actually agreed to. */
+  plan: Plan | null = null;
   /** What has been written since the plan was approved, in order, attributed. */
   readonly writes: WriteEntry[] = [];
+  /** Who made the most recent call to each tool, learned from the hook. */
+  private callers = new Map<string, string | undefined>();
   private pending: { resolve: (o: PlanOutcome) => void } | null = null;
+
+  /**
+   * The hook is the only place a call's author is known for certain (`agent_id`), so it records it
+   * here for the result sink, which knows success but not who asked. Delegations are forced into the
+   * foreground, so calls never interleave and the last caller of a tool is its current one.
+   */
+  noteCaller(tool: string, agent: string | undefined) {
+    this.callers.set(tool, agent);
+  }
+
+  callerOf(tool: string): string | undefined {
+    return this.callers.get(tool);
+  }
 
   /** Called when a tool has actually succeeded — an attempted write is not a write. */
   record(entry: WriteEntry) {
@@ -95,7 +113,9 @@ export class ProducerRun {
     this.phase = "idle";
     this.revision = 0;
     this.planId = null;
+    this.plan = null;
     this.writes.length = 0;
+    this.callers.clear();
   }
 }
 
@@ -158,6 +178,7 @@ export function toolFence(run: ProducerRun, log: (...a: unknown[]) => void = () 
     }
     // `agent_id` is what distinguishes a subagent's call from the producer's own (sdk.d.ts:177).
     const agent = h.agent_id ? h.agent_type : undefined;
+    run.noteCaller(tool, agent);
     const domain = agent ? DOMAIN[agent] : undefined;
     // `add_layer` and `remove_layer` name a `kind`; everything else names a `track` (an id or a
     // kind). Both resolve to a layer kind, which is what a domain is a list of.
@@ -196,4 +217,40 @@ export function foregroundAgents() {
       },
     };
   };
+}
+
+/**
+ * Did anything actually get written to `layer@section`? Matching is by layer kind and section name,
+ * which is how the plan's targets are written; `*` (or a bare layer) means any section.
+ */
+export function matches(entry: WriteEntry, target: string): boolean {
+  const [layer, section = "*"] = target.split("@");
+  if (!entry.track) return false;
+  const want = kindOf(layer.trim());
+  if (!want || kindOf(entry.track) !== want) return false;
+  if (section.trim() === "*" || !entry.section) return true;
+  return entry.section.trim().toLowerCase() === section.trim().toLowerCase();
+}
+
+/**
+ * The run's progress, read from what landed rather than from what anyone said. A step is done when
+ * every `layer@section` it promised has been written; a step that writes nothing addressable (form,
+ * key, a check) is done once a later step has landed something, and at the end of the run.
+ */
+export function checklist(plan: Plan, writes: readonly WriteEntry[], finished = false): TodoItem[] {
+  const steps = plan.steps ?? [];
+  const landed = steps.map((s) => (s.targets?.length ? s.targets.every((t) => writes.some((w) => matches(w, t))) : null));
+  // The last step we can prove is finished; everything before it has had its turn.
+  let lastProven = -1;
+  landed.forEach((done, i) => {
+    if (done) lastProven = i;
+  });
+  return steps.map((step, i) => {
+    const done = landed[i] ?? (finished || i < lastProven);
+    const first = landed.findIndex((d, j) => !(d ?? (finished || j < lastProven)));
+    return {
+      content: step.title || step.detail || `step ${i + 1}`,
+      status: done ? "completed" : i === first && !finished ? "in_progress" : "pending",
+    };
+  });
 }

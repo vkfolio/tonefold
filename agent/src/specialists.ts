@@ -56,7 +56,28 @@ export const SPECIALISTS: Record<string, AgentDefinition> = {
     prompt: specialistPrompt("harmony-form"),
     // `add_layer`/`set_instrument` are here so a missing pad does not block the whole step; the
     // fence still holds them to chords and pad.
-    tools: mcp([...READ, "suggest_chords", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords", "harmonize", "generate", "set_notes", "add_layer", "set_instrument"]),
+    tools: mcp([...READ, "suggest_chords", "set_key_tempo", "set_form", "set_section", "copy_section", "set_chords", "harmonize", "generate", "set_notes", "transpose", "add_layer", "set_instrument"]),
+    maxTurns: 30,
+  },
+  "melody-topline": {
+    description:
+      "Melody, counter-melody, the vocal harmony line and lyrics. Use for anything a listener would hum, after the harmony it sits over exists.",
+    prompt: specialistPrompt("melody-topline"),
+    tools: mcp([...READ, "set_notes", "generate", "vary", "set_lyrics", "transpose", "clear", "add_layer", "set_instrument"]),
+    maxTurns: 30,
+  },
+  "rhythm-section": {
+    description:
+      "Drums, percussion, bass and sub, plus groove and pocket. Use for everything rhythmic at once — they lock to each other and cannot sensibly be written apart.",
+    prompt: specialistPrompt("rhythm-section"),
+    tools: mcp([...READ, "set_notes", "generate", "vary", "set_groove", "humanize", "transpose", "clear", "add_layer", "set_instrument"]),
+    maxTurns: 30,
+  },
+  "arrangement-mix": {
+    description:
+      "The roster, instruments, who plays in which section, the energy curve and the feel. Runs twice: a thin roster pass before anything is written, and the polish pass after everything is.",
+    prompt: specialistPrompt("arrangement-mix"),
+    tools: mcp([...READ, "add_layer", "remove_layer", "set_instrument", "set_arrangement", "set_section", "set_groove", "humanize", "lock", "vary", "generate", "transpose", "clear"]),
     maxTurns: 30,
   },
 };

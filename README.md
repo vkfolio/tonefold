@@ -20,6 +20,11 @@ CLAP and VST3 for Windows, plus a standalone app that needs no DAW.
   before choosing a single instrument. Export the mix and one WAV per layer, or the MIDI.
 - **Gets into FL Studio three ways.** Drag a layer onto a channel, run the piano-roll import script,
   or route live MIDI out to your instruments.
+- **Plans before it writes.** *Producer* mode reads the session, proposes a plan you can see — the
+  key, the form, the steps and exactly which `layer@section` each one touches — and changes nothing
+  until you approve it. Then it hands each step to a specialist: harmony and form, melody and
+  topline, rhythm section, arrangement and mix. Nobody writes outside their own layers, and the
+  whole run can be reverted in one step. *Composer* mode is still there for a quick change.
 - **Edits by hand.** A full piano roll: draw, move, resize, velocity lane, drum lanes, scrub the
   playhead, click the keys to hear them. The composer sees your edits on its next turn.
 

@@ -66,6 +66,11 @@ pub struct EditorState {
     pub mode: String,
     /// Producer phase from the sidecar: idle | planning | awaiting_approval | executing.
     pub phase: String,
+    /// What the last turn cost, and what this session has cost so far. Shown, never enforced.
+    pub last_cost: Option<f64>,
+    pub session_cost: f64,
+    /// When the agent last said anything. A long run that has gone quiet is worth flagging.
+    pub last_event: Option<std::time::Instant>,
     show_arrangement: bool,
     show_composer: bool,
     autosave_pending: bool,
@@ -196,8 +201,8 @@ impl EditorState {
         if let Ok(mut g) = self.agent.lock() {
             if g.is_none() {
                 let client = AgentClient::connect(self.port, shared.store.clone());
-                if let Ok(sid) = shared.agent_session_id.lock() {
-                    if let Ok(mut s) = client.session_id.lock() {
+                if let Ok(sid) = shared.agent_sessions.lock() {
+                    if let Ok(mut s) = client.sessions.lock() {
                         *s = sid.clone();
                     }
                 }
@@ -238,6 +243,9 @@ impl EditorState {
                 a.send_plan_decision(&id, decision, notes);
             }
         }
+        // Undo's ring is 64 deep and a run makes far more changes than that, so approving marks
+        // the session first: that mark is the only way back afterwards.
+        let mark = (decision == "approve").then(|| shared.lock_store().checkpoint("before this plan"));
         if let Ok(mut p) = shared.plan.lock() {
             if let Some(p) = p.as_mut() {
                 p.status = match decision {
@@ -245,7 +253,29 @@ impl EditorState {
                     "reject" => "sent_back".into(),
                     _ => "cancelled".into(),
                 };
+                if let Some(mark) = mark {
+                    p.checkpoint = Some(mark);
+                }
             }
+        }
+    }
+
+    /// Puts the session back to where it was when this plan was approved.
+    pub fn revert_run(&mut self, shared: &Shared) {
+        let id = shared.plan.lock().ok().and_then(|p| p.as_ref().and_then(|p| p.checkpoint.clone()));
+        let Some(id) = id else { return };
+        let r = {
+            let mut g = shared.lock_store();
+            flvstx_core::ops::dispatch(&mut g, "revert_to_checkpoint", &serde_json::json!({ "checkpoint": id }))
+        };
+        match r {
+            Ok(_) => {
+                shared.push_chat(ChatRole::System, "reverted to before the plan ran");
+                if let Ok(mut p) = shared.plan.lock() {
+                    *p = None;
+                }
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("could not revert: {e}")),
         }
     }
 
@@ -405,10 +435,23 @@ impl EditorState {
             }
         }
         for e in events {
+            self.last_event = Some(std::time::Instant::now());
             match e {
                 AgentEvent::Connected => shared.push_chat(ChatRole::System, "composer connected"),
                 AgentEvent::Disconnected { reason } => {
                     self.turn_active = false;
+                    self.phase = "idle".into();
+                    // The sidecar settles a parked plan as cancelled when the socket drops, so a
+                    // card still offering Approve would be a button that does nothing.
+                    if let Ok(mut p) = shared.plan.lock() {
+                        if p.as_ref().map(|p| p.status == "awaiting_approval").unwrap_or(false) {
+                            *p = None;
+                            shared.push_chat(ChatRole::System, "the plan was dropped when the composer disconnected");
+                        }
+                    }
+                    if let Ok(mut t) = shared.todos.lock() {
+                        t.clear();
+                    }
                     shared.push_chat(ChatRole::System, format!("composer disconnected ({reason})"));
                 }
                 AgentEvent::Ready { backend, .. } => self.status = format!("agent ready ({backend})"),
@@ -432,13 +475,20 @@ impl EditorState {
                 AgentEvent::ToolResult { .. } => {}
                 AgentEvent::Rpc { .. } => {}
                 AgentEvent::SessionChanged => {}
-                AgentEvent::Done { session_id, .. } => {
+                AgentEvent::Done { session_id, cost_usd, mode, .. } => {
                     self.turn_active = false;
+                    if let Some(c) = cost_usd {
+                        self.last_cost = Some(c);
+                        self.session_cost += c;
+                    }
                     self.phase = "idle".into();
+                    if let Ok(mut t) = shared.todos.lock() {
+                        t.clear();
+                    }
                     self.streaming.clear();
                     if !session_id.is_empty() {
-                        if let Ok(mut s) = shared.agent_session_id.lock() {
-                            *s = Some(session_id);
+                        if let Ok(mut s) = shared.agent_sessions.lock() {
+                            s.insert(mode.unwrap_or_else(|| "composer".into()), session_id);
                         }
                     }
                 }
@@ -449,12 +499,17 @@ impl EditorState {
                 AgentEvent::PlanProposed { plan_id, plan } => {
                     shared.push_chat_from(ChatRole::Assistant, plan_markdown(&plan), Some("plan".into()));
                     if let Ok(mut p) = shared.plan.lock() {
-                        *p = Some(crate::state::PlanState { id: plan_id, plan, status: "awaiting_approval".into() });
+                        *p = Some(crate::state::PlanState { id: plan_id, plan, status: "awaiting_approval".into(), checkpoint: None });
                     }
                 }
                 AgentEvent::PlanResolved { decision, .. } => {
                     if decision == "stale" {
                         shared.push_chat(ChatRole::System, "that plan was already answered");
+                    }
+                }
+                AgentEvent::Todos { items } => {
+                    if let Ok(mut t) = shared.todos.lock() {
+                        *t = items;
                     }
                 }
                 AgentEvent::Phase { phase } => {
@@ -467,9 +522,12 @@ impl EditorState {
                     }
                     if phase == "idle" {
                         if let Ok(mut p) = shared.plan.lock() {
-                            // Keep a finished plan visible; drop one that never got approved.
-                            if p.as_ref().map(|p| p.status == "awaiting_approval" || p.status == "cancelled").unwrap_or(false) {
-                                *p = None;
+                            // Keep a finished plan — its checkpoint is the way back — but drop one
+                            // that never got approved.
+                            match p.as_mut() {
+                                Some(s) if s.status == "executing" => s.status = "done".into(),
+                                Some(s) if s.status != "sent_back" => *p = None,
+                                _ => {}
                             }
                         }
                     }
@@ -586,6 +644,9 @@ fn initial_state(params: Arc<FlvstxParams>) -> EditorState {
         model: "default".into(),
         mode: "composer".into(),
         phase: "idle".into(),
+        last_cost: None,
+        session_cost: 0.0,
+        last_event: None,
         show_arrangement: false,
         show_composer: true,
         autosave_pending: false,
@@ -1344,8 +1405,8 @@ fn new_project(shared: &Shared, st: &mut EditorState) {
     if let Ok(mut c) = shared.chat.lock() {
         c.clear();
     }
-    if let Ok(mut s) = shared.agent_session_id.lock() {
-        *s = None;
+    if let Ok(mut s) = shared.agent_sessions.lock() {
+        s.clear();
     }
     adopt_session(shared, st);
     set_project_path(None);
@@ -1812,7 +1873,7 @@ mod ui_tests {
                 revision: 2,
                 ..Default::default()
             };
-            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "awaiting_approval".into() });
+            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "awaiting_approval".into(), checkpoint: None });
 
             let mut seen = Vec::new();
             for frame in 0..3 {
@@ -1835,6 +1896,49 @@ mod ui_tests {
                     .unwrap_or_else(|| panic!("{label} should be rendered at scale {scale}"));
                 assert!(*y >= 0.0 && y + h <= 620.0, "{label} must stay on screen at scale {scale}");
             }
+        }
+    }
+
+    /// While the run goes, the checklist shares the panel with the input. A long one must scroll or
+    /// truncate, never push the writing surface off screen.
+    #[test]
+    fn a_running_checklist_leaves_the_input_reachable() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Flvstx::default().params.clone());
+            st.ui_scale = scale;
+            st.mode = "producer".into();
+            st.turn_active = true;
+            st.phase = "executing".into();
+            let shared = Shared::new(flvstx_core::Session::default());
+            let plan = flvstx_ipc::Plan { summary: "Building it".into(), steps: vec![Default::default(); 10], ..Default::default() };
+            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "executing".into(), checkpoint: Some("cp0".into()) });
+            *shared.todos.lock().unwrap() = (1..=10)
+                .map(|i| flvstx_ipc::TodoItem {
+                    content: format!("Step {i}: something with a reasonably long description"),
+                    status: if i < 4 { "completed" } else if i == 4 { "in_progress" } else { "pending" }.into(),
+                })
+                .collect();
+
+            let mut seen: Vec<(String, f32, f32)> = Vec::new();
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                seen = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos.y, text.galley.size().y)),
+                    _ => None,
+                }).collect();
+            }
+            let hint = seen.iter().find(|(t, ..)| t.starts_with("Describe a melody"))
+                .unwrap_or_else(|| panic!("the input should be rendered at scale {scale}"));
+            assert!(hint.1 + hint.2 <= 620.0, "the input must stay on screen at scale {scale}");
+            assert!(seen.iter().any(|(t, ..)| t.contains("3/10 steps")), "progress should be visible at scale {scale}");
         }
     }
 }
@@ -1906,5 +2010,6 @@ Press **Play** to hear it. Select a layer to explore its notes, or tell me what 
         }
     }
 }
+
 
 

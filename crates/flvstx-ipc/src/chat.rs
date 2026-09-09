@@ -87,6 +87,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         client.send_user_message_in(line, &ctx, model.as_deref(), &mode);
         // Stream events until done.
         let mut streaming_line = false;
+        let mut last_step = String::new();
         loop {
             match client.recv_timeout(Duration::from_secs(600)) {
                 Some(AgentEvent::AssistantDelta { text, .. }) => {
@@ -149,6 +150,20 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                 }
                 Some(AgentEvent::Phase { phase }) => {
                     println!("  [phase] {phase}");
+                }
+                Some(AgentEvent::Todos { items }) => {
+                    // The checklist is resent on every write; only a change of step is news.
+                    let done = items.iter().filter(|t| t.status == "completed").count();
+                    let now = items.iter().find(|t| t.status == "in_progress").map(|t| t.content.clone());
+                    let line = match &now {
+                        Some(c) => format!("  [{done}/{}] {c}", items.len()),
+                        None if !items.is_empty() && done == items.len() => format!("  [{done}/{}] all steps done", items.len()),
+                        None => String::new(),
+                    };
+                    if !line.is_empty() && line != last_step {
+                        println!("{line}");
+                        last_step = line;
+                    }
                 }
                 Some(AgentEvent::Error { message, .. }) => {
                     println!("\n  [error] {message}");

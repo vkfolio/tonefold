@@ -45,6 +45,12 @@ export interface Plan {
 export type PlanDecision = "approve" | "reject" | "cancel";
 
 /** Where a producer turn is: nothing may be written before `executing`. */
+/** One line of the producer's checklist, straight from its own TodoWrite call. */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export type Phase = "idle" | "planning" | "awaiting_approval" | "executing";
 
 export type ClientMessage =
@@ -66,7 +72,8 @@ export type AgentMessage =
   | { type: "pong" }
   | { type: "plan_proposed"; plan_id: string; plan: Plan }
   | { type: "plan_resolved"; plan_id: string; decision: PlanDecision | "stale"; notes?: string }
-  | { type: "phase"; phase: Phase };
+  | { type: "phase"; phase: Phase }
+  | { type: "todos"; items: TodoItem[] };
 
 /** Something that can run session operations on the plugin (or CLI) side. */
 export interface Rpc {

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Producer mode
+
+- A second mode beside the composer: it reads the session, **proposes a plan and waits**. The plan is
+  a list of changes — key, tempo, form, and per step the `layer@section` it will write — so
+  approving it is approving what gets touched, not a paragraph of prose. **Approve**, **Revise**
+  (the note you type is fed straight back and it re-plans in the same turn) or **Stop**.
+- The approval is enforced by the host, not asked for in a prompt: nothing that writes can run until
+  you approve.
+- **Four specialists.** Once approved, each step goes to an agent whose whole context is that craft —
+  harmony and form, melody and topline, rhythm section, arrangement and mix — and each is fenced to
+  its own layers. A specialist asked for something outside its territory is refused and hands the
+  musical intent back to the producer instead of faking it.
+- The producer checks the host's ledger of what actually landed rather than trusting a report, and a
+  live checklist shows which step is running.
+- **Revert this run**: a producer run makes far more changes than undo can hold, so approving a plan
+  marks the session first and one button puts it all back.
+- Cost per turn and for the session is shown in the panel. Nothing is capped — the model picker is
+  the only thing that governs spend.
+
+### Composer
+
 - **Ask AI** beside *Suggest*: hands one layer to the composer, which reads the section and
   chooses the approach (or writes the notes itself) instead of reseeding the rule engine.
 

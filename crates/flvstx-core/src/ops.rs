@@ -15,6 +15,14 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// A named snapshot taken before a run, so a whole batch of changes can be undone at once.
+#[derive(Debug, Clone)]
+pub struct Checkpoint {
+    pub id: String,
+    pub label: String,
+    pub session: Session,
+}
+
 /// Undo-able session store with snapshots.
 #[derive(Debug, Default)]
 pub struct Store {
@@ -23,11 +31,38 @@ pub struct Store {
     pub redo: Vec<Session>,
     /// Bumped on every mutation so UIs know to refresh.
     pub revision: u64,
+    /// Named snapshots. Undo's ring holds 64 steps and a producer run makes far more than that, so
+    /// "put it back the way it was" needs a mark of its own rather than a walk backwards.
+    pub checkpoints: Vec<Checkpoint>,
 }
 
 impl Store {
     pub fn new(session: Session) -> Self {
-        Store { session, history: Vec::new(), redo: Vec::new(), revision: 0 }
+        Store { session, history: Vec::new(), redo: Vec::new(), revision: 0, checkpoints: Vec::new() }
+    }
+
+    /// Marks the current session so it can be restored later. Keeps the last eight.
+    pub fn checkpoint(&mut self, label: &str) -> String {
+        let id = format!("cp{}", self.revision);
+        self.checkpoints.retain(|c| c.id != id);
+        self.checkpoints.push(Checkpoint { id: id.clone(), label: label.to_string(), session: self.session.clone() });
+        if self.checkpoints.len() > 8 {
+            self.checkpoints.remove(0);
+        }
+        id
+    }
+
+    /// Puts the session back to a checkpoint. Undoable in one step, like any other change.
+    pub fn revert_to(&mut self, id: &str) -> bool {
+        let Some(c) = self.checkpoints.iter().find(|c| c.id == id).cloned() else { return false };
+        let backup = std::mem::replace(&mut self.session, c.session);
+        self.history.push(backup);
+        if self.history.len() > 64 {
+            self.history.remove(0);
+        }
+        self.redo.clear();
+        self.revision += 1;
+        true
     }
 
     pub fn undo(&mut self) -> bool {
@@ -684,6 +719,18 @@ pub fn dispatch(store: &mut Store, method: &str, params: &Value) -> Result<Value
                 "hint": "In FL Studio: open the target piano roll, then Tools > Scripts > FLVSTX Import (or drag a .mid from the folder onto a Channel Rack slot)." }))
         }
         "list_scales" => Ok(json!({ "scales": ScaleKind::ALL.iter().map(|s| s.name()).collect::<Vec<_>>() })),
+        "checkpoint" => {
+            let label: Option<String> = opt(params, "label")?;
+            let id = store.checkpoint(label.as_deref().unwrap_or("checkpoint"));
+            Ok(json!({ "ok": true, "checkpoint": id }))
+        }
+        "revert_to_checkpoint" => {
+            let id: String = arg(params, "checkpoint")?;
+            if !store.revert_to(&id) {
+                return Err(Error::Parse(format!("no checkpoint '{id}' (have: {})", store.checkpoints.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(", "))));
+            }
+            Ok(json!({ "ok": true, "summary": describe(&store.session) }))
+        }
         _ => Err(Error::Parse(format!("unknown method '{method}'"))),
     }
 }
@@ -766,5 +813,29 @@ mod tests {
                 assert!(!s.flatten(&t.id).is_empty(), "{style} {}", t.id);
             }
         }
+    }
+
+    /// A producer run makes far more changes than undo's 64-deep ring, so "put it back" needs a
+    /// mark taken before the run rather than a walk backwards through it.
+    #[test]
+    fn a_checkpoint_survives_more_changes_than_undo_can_hold() {
+        let mut store = Store::new(demo_session("pop", "C major", 8, 2).unwrap());
+        let before = store.session.tempo;
+        let id = dispatch(&mut store, "checkpoint", &json!({ "label": "before the run" })).unwrap();
+        let id = id["checkpoint"].as_str().unwrap().to_string();
+
+        for tempo in 0..100 {
+            dispatch(&mut store, "set_key_tempo", &json!({ "tempo": 90.0 + tempo as f64 })).unwrap();
+        }
+        assert_ne!(store.session.tempo, before);
+        assert!(store.history.len() <= 64, "undo cannot reach back that far");
+
+        dispatch(&mut store, "revert_to_checkpoint", &json!({ "checkpoint": id })).unwrap();
+        assert_eq!(store.session.tempo, before);
+        // ...and the revert is itself one ordinary step, so a mis-click is recoverable.
+        assert!(store.undo());
+        assert_ne!(store.session.tempo, before);
+
+        assert!(dispatch(&mut store, "revert_to_checkpoint", &json!({ "checkpoint": "nope" })).is_err());
     }
 }

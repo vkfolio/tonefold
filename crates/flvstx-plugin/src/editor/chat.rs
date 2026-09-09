@@ -74,6 +74,19 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         } else if !connected && ui.small_button("Connect").clicked() {
             st.ensure_agent(shared);
         }
+        // A long delegated step can be quiet for a while; a very long silence usually is not work.
+        if st.turn_active && !waiting {
+            if let Some(quiet) = st.last_event.map(|t| t.elapsed().as_secs()).filter(|s| *s >= 120) {
+                ui.label(RichText::new(format!("quiet for {}m", quiet / 60)).small().color(Color32::from_rgb(240, 170, 120)))
+                    .on_hover_text("No word from the agent for a while. Cancel if it looks stuck.");
+            }
+        }
+        // Cost is shown, never capped — the model picker is the only thing that governs spend.
+        if let Some(c) = st.last_cost {
+            let total = st.session_cost;
+            ui.label(RichText::new(format!("${c:.2}")).small().color(theme::MUTED))
+                .on_hover_text(format!("last turn ${c:.2} · this session ${total:.2}"));
+        }
     });
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Model").small().weak());
@@ -96,7 +109,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     egui::TopBottomPanel::bottom("composer-input").frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(0, 10))).show_inside(ui, |ui| {
         let plan = shared.plan.lock().ok().and_then(|p| p.clone());
         if let Some(plan) = &plan {
-            plan_bar(ui, st, shared, plan);
+            plan_bar(ui, st, shared, plan, compact);
+        } else if st.turn_active {
+            // No plan on screen (composer mode, or a producer turn still planning) — but a running
+            // checklist is still worth showing.
+            todo_list(ui, shared, compact);
         }
         let compact = compact || plan.is_some();
         if !st.turn_active {
@@ -214,22 +231,50 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
 
 /// The pinned answer to a proposed plan. The plan itself goes into the transcript, which scrolls —
 /// this bar does not, so a twelve-step plan can still be answered on a small panel.
-fn plan_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared, plan: &PlanState) {
+fn plan_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared, plan: &PlanState, compact: bool) {
     let awaiting = plan.status == "awaiting_approval";
     let (title, tint) = match plan.status.as_str() {
         "awaiting_approval" => ("Plan — your call", Color32::from_rgb(143, 200, 218)),
         "executing" => ("Plan approved — building", Color32::from_rgb(240, 200, 100)),
         "sent_back" => ("Sent back — replanning", Color32::from_rgb(240, 200, 100)),
+        "done" => ("Plan done", Color32::from_rgb(120, 220, 170)),
         _ => ("Plan", theme::MUTED),
     };
+    let finished = plan.status == "done";
     egui::Frame::new().fill(theme::SURFACE).corner_radius(10.0).inner_margin(10.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(title).small().strong().color(tint));
-            let steps = plan.plan.steps.len();
-            let rev = if plan.plan.revision > 1 { format!(", revision {}", plan.plan.revision) } else { String::new() };
-            ui.label(RichText::new(format!("{steps} steps{rev} — read it above")).small().color(theme::MUTED));
+            // The subtitle is the first thing to go when the panel is tight: the checklist below it
+            // says more, and the input matters more than either.
+            if !compact {
+                let steps = plan.plan.steps.len();
+                let rev = if plan.plan.revision > 1 { format!(", revision {}", plan.plan.revision) } else { String::new() };
+                ui.label(RichText::new(format!("{steps} steps{rev} — read it above")).small().color(theme::MUTED));
+            }
         });
+        if finished {
+            ui.horizontal_wrapped(|ui| {
+                // One step back to before the whole run — undo cannot reach that far.
+                if plan.checkpoint.is_some() && ui.small_button("Revert this run").on_hover_text("Put the song back to how it was before the plan ran").clicked() {
+                    st.revert_run(shared);
+                }
+                if ui.small_button("Dismiss").clicked() {
+                    if let Ok(mut p) = shared.plan.lock() {
+                        *p = None;
+                    }
+                }
+            });
+        }
+        if !awaiting && !finished {
+            // Bounded: while it runs there is nothing here to click, and the input must survive a
+            // checklist of any length at any UI scale.
+            let budget = (ui.available_height() * 0.4).clamp(60.0, 260.0);
+            egui::ScrollArea::vertical().id_salt("run-todos").max_height(budget).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                todo_list(ui, shared, compact);
+            });
+        }
         if awaiting {
             ui.add_space(4.0);
             // Columns, not a wrapped row: at large UI scales a wrapped button falls off the panel,
@@ -260,4 +305,34 @@ fn plan_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared, plan: &Pla
         }
     });
     ui.add_space(8.0);
+}
+
+/// The producer's checklist while the run goes: what is done, what it is doing now. Mirrored from
+/// its own TodoWrite calls, so it cannot drift from what the model believes.
+fn todo_list(ui: &mut egui::Ui, shared: &Shared, compact: bool) {
+    let todos = shared.todos.lock().map(|t| t.clone()).unwrap_or_default();
+    if todos.is_empty() {
+        return;
+    }
+    let done = todos.iter().filter(|t| t.status == "completed").count();
+    ui.add_space(4.0);
+    ui.label(RichText::new(format!("{done}/{} steps", todos.len())).small().color(theme::MUTED));
+    // A tight panel gets only what is happening now; the rest is a count. The input matters more.
+    let current = todos.iter().position(|t| t.status == "in_progress").unwrap_or(done);
+    let (first, take) = if compact { (current, 1) } else { (0, 8) };
+    for t in todos.iter().skip(first).take(take) {
+        let (mark, color) = match t.status.as_str() {
+            "completed" => ("done", theme::MUTED),
+            "in_progress" => ("now", Color32::from_rgb(240, 200, 100)),
+            _ => ("next", theme::MUTED),
+        };
+        let content = match (compact, t.content.char_indices().nth(26)) {
+            (true, Some((cut, _))) => format!("{}…", &t.content[..cut]),
+            _ => t.content.clone(),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(mark).small().strong().color(color));
+            ui.label(RichText::new(content).small().color(if t.status == "completed" { theme::MUTED } else { theme::TEXT }));
+        });
+    }
 }

@@ -5,7 +5,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
-import { decisionResult, foregroundAgents, MAX_REVISIONS, ProducerRun, toolFence } from "./producer.js";
+import { checklist, decisionResult, foregroundAgents, MAX_REVISIONS, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
+import { matches, type WriteEntry } from "./producer.js";
+import type { Plan } from "./protocol.js";
 import { DOMAIN, kindOf } from "./specialists.js";
 
 function pre(tool: string, tool_input: Record<string, unknown> = {}, agent?: string): PreToolUseHookInput {
@@ -144,4 +146,56 @@ test("delegation never runs in the background", async () => {
   // Already in the foreground: nothing to say.
   const noop = await foregroundAgents()(pre("Agent", { run_in_background: false }));
   assert.deepEqual(noop, {});
+});
+
+test("verify_step's target grammar matches the plan's own words", () => {
+  const w = (track: string, section?: string): WriteEntry => ({ agent: "rhythm-section", tool: "generate", track, section });
+  assert.ok(matches(w("bass", "verse"), "bass@verse"));
+  assert.ok(matches(w("bass", "Verse"), "bass@verse"), "section names are not case-sensitive");
+  assert.ok(matches(w("bass2", "verse"), "bass@verse"), "a numbered layer is still that kind");
+  assert.ok(matches(w("drums", "chorus"), "drums@*"), "a wildcard section takes any");
+  assert.ok(matches(w("drums", "chorus"), "drums"), "so does no section at all");
+  assert.ok(!matches(w("bass", "chorus"), "bass@verse"));
+  assert.ok(!matches(w("melody", "verse"), "bass@verse"));
+  // Session-wide work carries no section and no track.
+  assert.ok(matches(w("chords"), "chords@verse"), "a write with no section counts for every section");
+  assert.ok(!matches({ agent: "producer", tool: "set_form" }, "chords@verse"));
+});
+
+test("the checklist is read from what landed, not from what was claimed", () => {
+  const plan: Plan = {
+    steps: [
+      { id: "s1", owner: "arrangement-mix", title: "Roster", detail: "", targets: [] },
+      { id: "s2", owner: "harmony-form", title: "Chords", detail: "", targets: ["chords@verse", "chords@chorus"] },
+      { id: "s3", owner: "rhythm-section", title: "Groove", detail: "", targets: ["drums@*", "bass@*"] },
+      { id: "s4", owner: "arrangement-mix", title: "Polish", detail: "", targets: [] },
+    ],
+  } as Plan;
+  const w = (track: string, section?: string): WriteEntry => ({ agent: "x", tool: "generate", track, section });
+  const status = (writes: WriteEntry[], finished = false) => checklist(plan, writes, finished).map((t) => t.status);
+
+  // Nothing yet: the first step is the one in hand.
+  assert.deepEqual(status([]), ["in_progress", "pending", "pending", "pending"]);
+  // Half a step is not a step.
+  assert.deepEqual(status([w("chords", "verse")]), ["in_progress", "pending", "pending", "pending"]);
+  // Both targets landed — and the roster step before it must have happened for that to be possible.
+  assert.deepEqual(status([w("chords", "verse"), w("chords", "chorus")]), ["completed", "completed", "in_progress", "pending"]);
+  assert.deepEqual(
+    status([w("chords", "verse"), w("chords", "chorus"), w("drums", "verse"), w("bass", "verse")]),
+    ["completed", "completed", "completed", "in_progress"],
+  );
+  // The run ending settles whatever cannot be proved either way.
+  assert.deepEqual(status([w("chords", "verse")], true), ["completed", "pending", "pending", "completed"]);
+  assert.deepEqual(checklist(plan, [])[1].content, "Chords");
+});
+
+test("reads are not writes", () => {
+  // The ledger is the answer to "was this written?", so anything in the read set must stay out of
+  // it — `get_notes` on a layer is not a part.
+  for (const read of ["get_notes", "get_session", "analyze", "suggest_chords", "verify_step"]) {
+    assert.ok(READ_TOOLS.has(read), `${read} should be a read`);
+  }
+  for (const write of ["generate", "set_notes", "set_chords", "humanize", "add_layer", "set_arrangement"]) {
+    assert.ok(!READ_TOOLS.has(write), `${write} changes the song`);
+  }
 });

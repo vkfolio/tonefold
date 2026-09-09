@@ -5,7 +5,7 @@ import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-age
 import { makeServer, TOOL_NAMES } from "./tools.js";
 import { systemPrompt, AGENT_ROOT } from "./prompt.js";
 import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Rpc } from "./protocol.js";
-import { decisionResult, foregroundAgents, ProducerRun, toolFence } from "./producer.js";
+import { checklist, decisionResult, foregroundAgents, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
 import { SPECIALISTS } from "./specialists.js";
 
 const VERSION = "0.1.0";
@@ -155,6 +155,12 @@ class Connection implements Rpc {
     }
   }
 
+  /** Progress, derived from the ledger — never from a claim that a step is done. */
+  private sendChecklist(finished = false) {
+    if (!this.run.plan) return;
+    this.send({ type: "todos", items: checklist(this.run.plan, this.run.writes, finished) });
+  }
+
   private setPhase(phase: Phase) {
     this.run.phase = phase;
     this.send({ type: "phase", phase });
@@ -184,6 +190,10 @@ class Connection implements Rpc {
           this.send({ type: "plan_proposed", plan_id: planId, plan: revised });
           this.send({ type: "phase", phase: "awaiting_approval" });
           const outcome = await answered;
+          if (outcome.decision === "approve") {
+            this.run.plan = revised;
+            this.sendChecklist();
+          }
           this.setPhase(outcome.decision === "approve" ? "executing" : "planning");
           return decisionResult(outcome, this.run.revision);
         }
@@ -191,16 +201,22 @@ class Connection implements Rpc {
     const server = makeServer(
       this,
       (name, input, result, ok, toolUseId) => {
-      const agent = toolUseId ? this.agentOf.get(toolUseId) : undefined;
+      // The hook knows the caller for certain; the message pump only knows it when the SDK gave the
+      // block an id we saw. Prefer the hook.
+      const agent = this.run.callerOf(name) ?? (toolUseId ? this.agentOf.get(toolUseId) : undefined);
       // The ledger records what landed, not what was attempted — hence here and not in the hook.
-      if (ok && producer && name !== "propose_plan") {
-        const p = (input ?? {}) as { track?: unknown; section?: unknown };
+      // Reads are not writes: a specialist that only looked at a layer has not written it, and
+      // verify_step would otherwise call the step done.
+      if (ok && producer && !READ_TOOLS.has(name) && name !== "propose_plan") {
+        // `add_layer` names a `kind`; everything else names a `track`.
+        const p = (input ?? {}) as { track?: unknown; kind?: unknown; section?: unknown };
         this.run.record({
           agent: agent ?? "producer",
           tool: name,
-          track: typeof p.track === "string" ? p.track : undefined,
+          track: typeof p.track === "string" ? p.track : typeof p.kind === "string" ? p.kind : undefined,
           section: typeof p.section === "string" ? p.section : undefined,
         });
+        this.sendChecklist();
       }
       this.send({
         type: "tool_result",
@@ -211,7 +227,7 @@ class Connection implements Rpc {
         ok,
       });
       },
-      reviewPlan,
+      reviewPlan ? { reviewPlan, ledger: () => this.run.writes } : undefined,
     );
     const resume = this.sessionIds[this.mode] || undefined;
     log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${this.model ?? "default"}`);
@@ -224,13 +240,18 @@ class Connection implements Rpc {
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },
         allowedTools: [
-          ...[...TOOL_NAMES, ...(producer ? ["propose_plan"] : [])].map((t) => `mcp__flvstx__${t}`),
+          ...[...TOOL_NAMES, ...(producer ? ["propose_plan", "verify_step"] : [])].map((t) => `mcp__flvstx__${t}`),
           // Both spellings: the delegation tool has been called each at different SDK versions.
           ...(producer ? ["Agent", "Task"] : []),
         ],
-        // `allowedTools` only auto-approves; this list is the actual fence.
+        // `allowedTools` only auto-approves — `tools` is what decides which built-ins exist at all
+        // (sdk.d.ts). Without it the producer also gets SendMessage, TaskOutput and the rest, and it
+        // will reach for them: in testing it tried to message a specialist that had hit its turn
+        // limit instead of re-delegating the work that was left.
+        tools: producer ? ["Agent", "Task"] : [],
         disallowedTools: [
-          "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "NotebookEdit", "TodoWrite",
+          "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "NotebookEdit",
+          "TodoWrite",
           ...(producer ? [] : ["Task", "Agent"]),
         ],
         // The specialists. `model` is absent from every definition, so the panel's picker governs
@@ -265,7 +286,11 @@ class Connection implements Rpc {
           }
           if (any.subtype === "init") {
             log(`init model=${any.model} apiKeySource=${any.apiKeySource} session=${any.session_id}`);
-            log(`mcp_servers=${JSON.stringify(any.mcp_servers)} tools=${(any.tools ?? []).filter((t: string) => t.includes("flvstx")).join(",") || "(no flvstx tools)"} all=${(any.tools ?? []).length}`);
+            const all: string[] = any.tools ?? [];
+            const ours = all.filter((t) => t.includes("flvstx"));
+            // The built-ins matter as much as ours: anything unexpected here is a tool the
+            // model can reach for and we did not mean it to have.
+            log(`mcp_servers=${JSON.stringify(any.mcp_servers)} flvstx=${ours.length} builtin=[${all.filter((t) => !t.includes("flvstx")).join(",")}]`);
           }
           break;
         case "stream_event": {
@@ -319,8 +344,11 @@ class Connection implements Rpc {
     log("SDK session ended");
     this.running = false;
     this.turnActive = false;
+    if (this.mode === "producer") {
+      this.sendChecklist(true);
+      this.send({ type: "phase", phase: "idle" });
+    }
     this.run.reset();
-    if (this.mode === "producer") this.send({ type: "phase", phase: "idle" });
     this.q = null;
     // A fresh inbox for the next turn (the old one was consumed).
     this.inbox = new Inbox();

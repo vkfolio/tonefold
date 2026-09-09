@@ -56,8 +56,12 @@ pub struct Persisted {
     pub session: Session,
     #[serde(default)]
     pub chat: Vec<ChatLine>,
+    /// Pre-1.2 projects: the one composer conversation. Read on load, never written again.
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    /// The conversation to resume per mode ("composer", "producer").
+    #[serde(default)]
+    pub agent_sessions: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub selected_section: Option<String>,
     #[serde(default)]
@@ -97,10 +101,12 @@ pub struct Shared {
     /// Instance id that renders the built-in audio (0 = none yet); avoids doubled sound with several instances.
     pub audio_owner: AtomicU64,
     pub chat: Mutex<Vec<ChatLine>>,
-    pub agent_session_id: Mutex<Option<String>>,
+    pub agent_sessions: Mutex<std::collections::HashMap<String, String>>,
     pub ui: Mutex<UiState>,
     /// The producer's current plan: proposed and awaiting an answer, or approved and running.
     pub plan: Mutex<Option<PlanState>>,
+    /// The producer's checklist while a run is going. Not persisted: it belongs to a live turn.
+    pub todos: Mutex<Vec<flvstx_ipc::TodoItem>>,
 }
 
 /// A proposed plan plus where it is. Kept on `Shared` (not the editor) so it survives a project
@@ -109,8 +115,11 @@ pub struct Shared {
 pub struct PlanState {
     pub id: String,
     pub plan: flvstx_ipc::Plan,
-    /// "awaiting_approval", "executing", "approved", "sent_back", "cancelled", "stale".
+    /// "awaiting_approval", "executing", "done", "sent_back", "cancelled".
     pub status: String,
+    /// The session as it was when this plan was approved, so the whole run can be put back.
+    #[serde(default)]
+    pub checkpoint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,8 +220,9 @@ impl Shared {
             soundfont_status: Mutex::new("soundfont: not loaded".into()),
             audio_owner: AtomicU64::new(0),
             chat: Mutex::new(Vec::new()),
-            agent_session_id: Mutex::new(None),
+            agent_sessions: Mutex::new(Default::default()),
             plan: Mutex::new(None),
+            todos: Mutex::new(Vec::new()),
             ui: Mutex::new(UiState::default()),
         };
         let shared = Arc::new(shared);
@@ -273,7 +283,8 @@ impl Shared {
         Persisted {
             session: self.lock_store().session.clone(),
             chat: self.chat.lock().map(|c| c.clone()).unwrap_or_default(),
-            agent_session_id: self.agent_session_id.lock().ok().and_then(|s| s.clone()),
+            agent_session_id: None,
+            agent_sessions: self.agent_sessions.lock().map(|s| s.clone()).unwrap_or_default(),
             selected_section: ui.selected_section,
             selected_track: Some(ui.selected_track.clone()),
             ui_scale: None,
@@ -289,8 +300,12 @@ impl Shared {
         if let Ok(mut c) = self.chat.lock() {
             *c = p.chat;
         }
-        if let Ok(mut s) = self.agent_session_id.lock() {
-            *s = p.agent_session_id;
+        if let Ok(mut s) = self.agent_sessions.lock() {
+            *s = p.agent_sessions;
+            // A project saved before producer mode existed carries one id: it is the composer's.
+            if let Some(old) = p.agent_session_id {
+                s.entry("composer".into()).or_insert(old);
+            }
         }
         if let Ok(mut u) = self.ui.lock() {
             u.selected_section = p.selected_section;
