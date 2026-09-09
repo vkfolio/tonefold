@@ -1158,7 +1158,10 @@ fn save_project(shared: &Shared, st: &EditorState, path: &std::path::Path) -> Re
 /// Replaces the session with the one in `path`.
 fn open_project(shared: &Shared, st: &mut EditorState, path: &std::path::Path) -> Result<(), String> {
     let json = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let p: Persisted = serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Accept a bare session too, so a file built by flvstx-cli (or another tool) opens here.
+    let v = if v.get("session").is_some() { v } else { serde_json::json!({ "session": v }) };
+    let p: Persisted = serde_json::from_value(v).map_err(|e| format!("{}: {e}", path.display()))?;
     if let Some(sc) = p.ui_scale {
         st.ui_scale = sc;
     }

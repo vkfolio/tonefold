@@ -22,13 +22,33 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// Reads a bare session or a `.flvstx` project (which wraps one).
 fn load(path: &str) -> Result<Session> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    Ok(serde_json::from_str(&text)?)
+    let v: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("parsing {path}"))?;
+    let inner = if v.get("session").is_some() { v["session"].clone() } else { v };
+    Ok(serde_json::from_value(inner).with_context(|| format!("{path} is not a FLVSTX session"))?)
 }
 
+/// Writes a `.flvstx` project (openable in the app) or a bare session, by extension. An existing
+/// project's chat and selection are preserved.
 fn save(path: &str, s: &Session) -> Result<()> {
-    std::fs::write(path, serde_json::to_string_pretty(s)?)?;
+    if !path.to_ascii_lowercase().ends_with(".flvstx") {
+        std::fs::write(path, serde_json::to_string_pretty(s)?)?;
+        return Ok(());
+    }
+    let mut doc = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(|v| v.get("session").is_some())
+        .unwrap_or_else(|| serde_json::json!({ "chat": [], "ui_scale": 1.5 }));
+    doc["session"] = serde_json::to_value(s)?;
+    if doc.get("selected_section").and_then(|x| x.as_str()).is_none() {
+        if let Some(first) = s.sections.first() {
+            doc["selected_section"] = serde_json::Value::String(first.id.clone());
+        }
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&doc)?)?;
     Ok(())
 }
 
