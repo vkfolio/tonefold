@@ -66,9 +66,14 @@ the layers × sections grid: click a cell to silence or enable a layer in that s
 start sparse by default).
 
 Generation is layered and order-independent: whatever exists constrains the next suggestion.
-`Suggest <layer>` gives three takes for the selected layer (chords fitted to an existing melody, melody over
-existing chords, arps/pads/plucks from the chords, counter-melody and harmony from the lead, bass/sub from
-chords, drums/percussion by energy). `Keep` locks the layer. `Generate section` fills every unlocked layer of
+`Suggest <layer>` gives three takes for the selected layer from the rule engine (chords fitted to an existing
+melody, melody over existing chords, arps/pads/plucks from the chords, counter-melody and harmony from the
+lead, bass/sub from chords, drums/percussion by energy) — instant, free, and a different roll of the same
+dice each time. `Ask AI` beside it hands that one layer to the composer instead: it reads the section, picks
+the approach from the style and what the other layers are doing — including writing the notes itself when it
+has a specific idea — checks its work and says what it did in the chat. Slower and it costs a turn, so reach
+for it when the engine's takes are all the same shape and you want judgement rather than another seed.
+`Keep` locks the layer. `Generate section` fills every unlocked layer of
 the section; `Generate song` fills the whole song with continuity (later sections reuse the first melody's
 motif, the final chorus is the biggest, builds roll into the next section, intros/breaks are sparse).
 

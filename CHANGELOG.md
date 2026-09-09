@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Ask AI** beside *Suggest*: hands one layer to the composer, which reads the section and
+  chooses the approach (or writes the notes itself) instead of reseeding the rule engine.
+
 ## 1.1.0 — 2026-09-09
 
 A redesigned editor, and a piano roll you can actually navigate.

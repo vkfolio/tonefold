@@ -232,6 +232,40 @@ impl EditorState {
         }
     }
 
+    /// Hands one layer to the composer instead of the rule engine. The engine reseeded gives you a
+    /// different roll of the same dice; the composer chooses the approach — the pattern, the rate,
+    /// whether to write the notes itself — from what the rest of the song is doing.
+    fn ask_composer_for_layer(&mut self, shared: &Shared, track: &str, section: &str) {
+        let (layer, section_name, kind, style) = {
+            let g = shared.lock_store();
+            let t = g.session.track_by(track);
+            let s = g.session.section(section);
+            (
+                t.map(|t| t.name.clone()).unwrap_or_else(|| track.to_string()),
+                s.map(|s| s.name.clone()).unwrap_or_else(|| section.to_string()),
+                t.map(|t| t.kind).unwrap_or(TrackRole::Melody),
+                g.session.style.clone(),
+            )
+        };
+        let aim = match kind {
+            TrackRole::Chords => "a progression that carries the section and fits whatever melody is already there",
+            TrackRole::Melody => "a line with one idea in it that develops, not a run of notes",
+            TrackRole::Bass => "a part that locks to the kick and leaves the melody room",
+            TrackRole::Drums | TrackRole::Percussion => "a groove with real dynamics, not a grid",
+            TrackRole::Arpeggio | TrackRole::Pluck => "a figure that moves under the harmony without fighting the melody",
+            TrackRole::Pad => "something that supports the harmony and breathes",
+            _ => "a part that earns its place in the arrangement",
+        };
+        let prompt = format!(
+            "Write the {layer} layer for the \"{section_name}\" section — that layer only, nothing else. \
+             Aim for {aim}. Read the section first, then choose the approach yourself: generate with \
+             parameters that suit {style} and what the other layers are doing, or write the notes with \
+             set_notes if you have a specific idea. Check it with analyze, fix what it flags, and reply \
+             in one line saying what you wrote and why."
+        );
+        self.send_message(shared, &prompt);
+    }
+
     /// Produces three alternatives for one layer, constrained by the layers that already exist
     /// (melody -> harmonize chords to it; chords -> melody over them; both -> everything else fits).
     fn suggest(&mut self, shared: &Shared, track: &str, section: &str) {
@@ -1550,9 +1584,21 @@ fn generation_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             _ => "3 takes at different densities",
         };
         let btn = egui::Button::new(RichText::new(format!("Suggest {track_name}")).strong().color(theme::CANVAS)).fill(track_color(kind));
-        if ui.add_enabled(sec.is_some() && !locked, btn).on_hover_text(hint).clicked() {
+        if ui.add_enabled(sec.is_some() && !locked, btn).on_hover_text(format!("Rule engine: {hint}")).clicked() {
             let tid = ui_state.selected_track.clone();
             st.suggest(shared, &tid, sec.as_deref().unwrap());
+        }
+        let ask = egui::Button::new(RichText::new("Ask AI").strong().color(theme::ACCENT)).fill(theme::SURFACE);
+        if ui
+            .add_enabled(sec.is_some() && !locked && !st.turn_active, ask)
+            .on_hover_text(format!(
+                "The composer writes {track_name} for this section, choosing the approach from the style and the other layers — \
+                 where Suggest reseeds the rule engine. Slower, and it explains itself in the chat."
+            ))
+            .clicked()
+        {
+            let tid = ui_state.selected_track.clone();
+            st.ask_composer_for_layer(shared, &tid, sec.as_deref().unwrap());
         }
         if !st.takes.is_empty() && st.take_track.as_deref() == Some(ui_state.selected_track.as_str()) && sec.as_deref() == Some(st.take_section.as_str()) {
             ui.label(RichText::new("takes:").weak());
