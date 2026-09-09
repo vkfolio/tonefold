@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-09-09
+
+A producer that plans the work, asks before it writes, and hands each part to a specialist.
 
 ### Producer mode
 

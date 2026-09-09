@@ -8,7 +8,7 @@ import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Rpc } from "./prot
 import { checklist, decisionResult, foregroundAgents, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
 import { SPECIALISTS } from "./specialists.js";
 
-const VERSION = "0.1.0";
+const VERSION = "1.2.0";
 const args = process.argv.slice(2);
 const flag = (n: string) => {
   const i = args.indexOf(n);

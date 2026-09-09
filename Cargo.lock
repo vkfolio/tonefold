@@ -1396,7 +1396,7 @@ checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
 name = "flvstx-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "flvstx-core",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "flvstx-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "midly",
  "rand 0.9.5",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "flvstx-ipc"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "flvstx-core",
@@ -1430,7 +1430,7 @@ dependencies = [
 
 [[package]]
 name = "flvstx-plugin"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arc-swap",
  "egui-baseview",
