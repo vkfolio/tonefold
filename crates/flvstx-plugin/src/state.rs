@@ -334,3 +334,39 @@ impl Shared {
 pub fn ticks_per_sample(tempo: f32, sample_rate: f32) -> f64 {
     flvstx_core::playback::ticks_per_sample(tempo, sample_rate)
 }
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    /// A project saved before producer mode must still open: every field added since is optional,
+    /// and the one conversation such a project remembers is the composer's.
+    #[test]
+    fn a_pre_producer_project_still_loads() {
+        let old = serde_json::json!({
+            "session": flvstx_core::Session::default(),
+            "chat": [
+                { "role": "user", "text": "make it warmer" },
+                { "role": "assistant", "text": "done" }
+            ],
+            "agent_session_id": "sess-old",
+            "selected_section": "verse",
+            "ui_scale": 1.5
+        });
+        let p: Persisted = serde_json::from_value(old).expect("an old project must still load");
+        assert_eq!(p.chat.len(), 2);
+        assert!(p.chat.iter().all(|l| l.agent.is_none()));
+        assert!(p.agent_sessions.is_empty());
+
+        let shared = Shared::new(flvstx_core::Session::default());
+        shared.load_persisted(p);
+        assert_eq!(shared.agent_sessions.lock().unwrap().get("composer").map(String::as_str), Some("sess-old"));
+        assert!(shared.plan.lock().unwrap().is_none());
+        assert!(shared.todos.lock().unwrap().is_empty());
+
+        // ...and what it saves now carries the map instead.
+        let round = shared.to_persisted();
+        assert_eq!(round.agent_session_id, None);
+        assert_eq!(round.agent_sessions.get("composer").map(String::as_str), Some("sess-old"));
+    }
+}
