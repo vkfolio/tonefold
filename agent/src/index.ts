@@ -5,7 +5,8 @@ import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-age
 import { makeServer, TOOL_NAMES } from "./tools.js";
 import { systemPrompt, AGENT_ROOT } from "./prompt.js";
 import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Rpc } from "./protocol.js";
-import { decisionResult, ProducerRun, writeFence } from "./producer.js";
+import { decisionResult, foregroundAgents, ProducerRun, toolFence } from "./producer.js";
+import { SPECIALISTS } from "./specialists.js";
 
 const VERSION = "0.1.0";
 const args = process.argv.slice(2);
@@ -190,12 +191,23 @@ class Connection implements Rpc {
     const server = makeServer(
       this,
       (name, input, result, ok, toolUseId) => {
+      const agent = toolUseId ? this.agentOf.get(toolUseId) : undefined;
+      // The ledger records what landed, not what was attempted — hence here and not in the hook.
+      if (ok && producer && name !== "propose_plan") {
+        const p = (input ?? {}) as { track?: unknown; section?: unknown };
+        this.run.record({
+          agent: agent ?? "producer",
+          tool: name,
+          track: typeof p.track === "string" ? p.track : undefined,
+          section: typeof p.section === "string" ? p.section : undefined,
+        });
+      }
       this.send({
         type: "tool_result",
         name,
         summary: ok ? result.slice(0, 400) : `ERROR: ${result.slice(0, 400)}`,
         tool_use_id: toolUseId,
-        agent: toolUseId ? this.agentOf.get(toolUseId) : undefined,
+        agent,
         ok,
       });
       },
@@ -211,12 +223,30 @@ class Connection implements Rpc {
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },
-        allowedTools: [...TOOL_NAMES, ...(producer ? ["propose_plan"] : [])].map((t) => `mcp__flvstx__${t}`),
+        allowedTools: [
+          ...[...TOOL_NAMES, ...(producer ? ["propose_plan"] : [])].map((t) => `mcp__flvstx__${t}`),
+          // Both spellings: the delegation tool has been called each at different SDK versions.
+          ...(producer ? ["Agent", "Task"] : []),
+        ],
         // `allowedTools` only auto-approves; this list is the actual fence.
-        disallowedTools: ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite", "Agent"],
-        // Producer mode cannot write until the user approves the plan, and that is enforced here
-        // rather than asked for in the prompt.
-        hooks: producer ? { PreToolUse: [{ matcher: "mcp__flvstx__.*", hooks: [writeFence(this.run)], timeout: 10 }] } : undefined,
+        disallowedTools: [
+          "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebSearch", "WebFetch", "NotebookEdit", "TodoWrite",
+          ...(producer ? [] : ["Task", "Agent"]),
+        ],
+        // The specialists. `model` is absent from every definition, so the panel's picker governs
+        // the whole run.
+        agents: producer ? SPECIALISTS : undefined,
+        // Both rules the design depends on are enforced here rather than asked for in a prompt:
+        // nothing is written before the user approves, and no specialist writes outside its layers.
+        hooks: producer
+          ? {
+              PreToolUse: [
+                { matcher: "mcp__flvstx__.*", hooks: [toolFence(this.run, log)], timeout: 10 },
+                { matcher: "Agent|Task", hooks: [foregroundAgents()], timeout: 10 },
+              ],
+            }
+          : undefined,
+        forwardSubagentText: true,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         includePartialMessages: true,
@@ -230,6 +260,9 @@ class Connection implements Rpc {
       const any = msg as any;
       switch (msg.type) {
         case "system":
+          if (any.subtype === "task_started" && any.subagent_type) {
+            this.send({ type: "assistant_message", text: `_${any.description ?? "working"}_`, agent: any.subagent_type });
+          }
           if (any.subtype === "init") {
             log(`init model=${any.model} apiKeySource=${any.apiKeySource} session=${any.session_id}`);
             log(`mcp_servers=${JSON.stringify(any.mcp_servers)} tools=${(any.tools ?? []).filter((t: string) => t.includes("flvstx")).join(",") || "(no flvstx tools)"} all=${(any.tools ?? []).length}`);

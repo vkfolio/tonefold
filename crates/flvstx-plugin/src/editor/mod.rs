@@ -412,14 +412,22 @@ impl EditorState {
                     shared.push_chat(ChatRole::System, format!("composer disconnected ({reason})"));
                 }
                 AgentEvent::Ready { backend, .. } => self.status = format!("agent ready ({backend})"),
-                AgentEvent::AssistantDelta { text, .. } => self.streaming.push_str(&text),
-                AgentEvent::AssistantMessage { text, .. } => {
-                    self.streaming.clear();
-                    shared.push_chat(ChatRole::Assistant, text);
+                AgentEvent::AssistantDelta { text, agent, .. } => {
+                    // Only the main thread streams into the live bubble; a forwarded specialist
+                    // would otherwise interleave character by character into the producer's prose.
+                    if agent.is_none() {
+                        self.streaming.push_str(&text);
+                    }
                 }
-                AgentEvent::ToolCall { name, input, .. } => {
+                AgentEvent::AssistantMessage { text, agent, .. } => {
+                    if agent.is_none() {
+                        self.streaming.clear();
+                    }
+                    shared.push_chat_from(ChatRole::Assistant, text, agent);
+                }
+                AgentEvent::ToolCall { name, input, agent, .. } => {
                     let short = summarize_input(&name, &input);
-                    shared.push_chat(ChatRole::Tool, format!("{name} {short}"));
+                    shared.push_chat_from(ChatRole::Tool, format!("{name} {short}"), agent);
                 }
                 AgentEvent::ToolResult { .. } => {}
                 AgentEvent::Rpc { .. } => {}

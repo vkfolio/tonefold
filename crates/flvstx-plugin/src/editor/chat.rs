@@ -15,6 +15,18 @@ pub const QUICK_ACTIONS: &[(&str, &str)] = &[
     ("Full song", "Turn the current material into a full song: intro, verse, chorus, verse 2, chorus, bridge, final chorus, outro, with related melodies and an energy curve."),
 ];
 
+/// The colour a specialist signs its messages with — the same family as the layers it owns, so a
+/// glance at the transcript says who was working.
+fn agent_color(agent: &str) -> Color32 {
+    match agent {
+        "harmony-form" => Color32::from_rgb(126, 168, 232),   // chords blue
+        "melody-topline" => Color32::from_rgb(232, 186, 116), // melody amber
+        "rhythm-section" => Color32::from_rgb(228, 138, 170),  // drums pink
+        "arrangement-mix" => Color32::from_rgb(140, 208, 170), // arrangement green
+        _ => Color32::from_rgb(143, 200, 218),
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
     // At large UI scales in a narrow rack the header alone can eat the panel, and the input has to
     // stay reachable — so the title shrinks before the writing surface does.
@@ -146,8 +158,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             if lines[index].role == ChatRole::Tool {
                 let start = index;
                 while index < lines.len() && lines[index].role == ChatRole::Tool { index += 1; }
+                let by = lines[start..index].iter().filter_map(|l| l.agent.clone()).next();
+                let title = match &by {
+                    Some(a) => format!("{} composition steps · {}", index - start, a.replace('-', " ")),
+                    None => format!("{} composition steps", index - start),
+                };
+                let tint = by.as_deref().map(agent_color).unwrap_or(theme::MUTED);
                 ui.push_id(("activity", start), |ui| {
-                    egui::CollapsingHeader::new(RichText::new(format!("{} composition steps", index - start)).small().color(theme::MUTED)).show(ui, |ui| {
+                    egui::CollapsingHeader::new(RichText::new(title).small().color(tint)).show(ui, |ui| {
                         for line in &lines[start..index] { ui.label(RichText::new(&line.text).small()); }
                     });
                 });
@@ -162,12 +180,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                         egui::Frame::new().fill(if user { Color32::from_rgb(33, 57, 64) } else { theme::SURFACE })
                             .corner_radius(10.0).inner_margin(14.0).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                let author = if user {
-                                    "YOU".to_string()
-                                } else {
-                                    line.agent.clone().map(|a| a.replace('-', " ").to_uppercase()).unwrap_or_else(|| if producer { "PRODUCER".into() } else { "COMPOSER".into() })
+                                let (author, tint) = match (&line.agent, user) {
+                                    (_, true) => ("YOU".to_string(), Color32::from_rgb(143, 200, 218)),
+                                    (Some(a), _) => (a.replace('-', " ").to_uppercase(), agent_color(a)),
+                                    (None, _) => ((if producer { "PRODUCER" } else { "COMPOSER" }).to_string(), Color32::from_rgb(143, 200, 218)),
                                 };
-                                ui.label(RichText::new(author).small().strong().color(Color32::from_rgb(143, 200, 218)));
+                                ui.label(RichText::new(author).small().strong().color(tint));
                                 if user { ui.label(&line.text); }
                                 else { egui_commonmark::CommonMarkViewer::new().show(ui, &mut st.md_cache, &line.text); }
                             });

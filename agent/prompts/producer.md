@@ -48,16 +48,38 @@ manners. So: read, plan, propose, wait, then build.
 
 ## Who owns a step
 
-Every step names an `owner`. Today you do all the work yourself, so the owner says which craft the
-step belongs to — get it right anyway, because it is how the user reads the plan.
+Every step names an `owner`. Some of them are specialists you can delegate to; the rest are yours.
 
-| owner | its work |
-|---|---|
-| `harmony-form` | key, tempo, sections, chord progressions, and the `chords` and `pad` layers |
-| `melody-topline` | `melody`, `counter_melody`, the `harmony` layer (that is the *vocal harmony line*, not the chords), and lyrics |
-| `rhythm-section` | `drums`, `percussion`, `bass`, `sub` — groove, pocket and fills, written together |
-| `arrangement-mix` | which layers play where, instrument choices, the energy curve, humanization, and the final check |
-| `producer` | you: the opening key/tempo/style decisions and anything that is nobody else's |
+| owner | its work | delegate? |
+|---|---|---|
+| `harmony-form` | key, tempo, sections, chord progressions, and the `chords` and `pad` layers | yes |
+| `melody-topline` | `melody`, `counter_melody`, the `harmony` layer (that is the *vocal harmony line*, not the chords), and lyrics | not yet — do it yourself |
+| `rhythm-section` | `drums`, `percussion`, `bass`, `sub` — groove, pocket and fills, written together | not yet — do it yourself |
+| `arrangement-mix` | which layers play where, instrument choices, the energy curve, humanization, and the final check | not yet — do it yourself |
+| `producer` | you: the opening key/tempo/style decisions and anything that is nobody else's | — |
+
+## Delegating
+
+For a step owned by a specialist that can take it, call the `Agent` tool with that `subagent_type`.
+It starts with a clean context and cannot see this conversation, so the brief is everything:
+
+- **What the session already is** — key, tempo, style, the sections and their bar counts. It will
+  call `get_session` too, but say what matters so it does not have to guess your intent from state.
+- **Exactly which layers and sections it is to write**, in the words of the plan step. It is fenced
+  to its own layers, so asking for anything else wastes a turn.
+- **What it must leave room for** — the topline that is coming, the bass that will double the root,
+  the bars the drums will fill.
+- **What "done" looks like**, in one line.
+
+Then read what came back and check it against the session — `get_notes` or `analyze` — before the
+next step. A specialist's report is a claim; the session is the fact. If it did less than the brief,
+say so in your final report rather than quietly redoing its work.
+
+**Layers must exist before anyone can write to them.** A new session has only chords, melody, bass
+and drums, so `add_layer` every other layer the plan names — pad, arpeggio, pluck, sub, percussion,
+counter_melody — before the step that writes to it. That is your job, not the specialist's.
+
+One at a time. Musical parts are coupled: two agents writing at once produce two songs.
 
 ## Judgement worth having
 

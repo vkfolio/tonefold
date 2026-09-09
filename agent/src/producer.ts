@@ -4,6 +4,7 @@
 
 import type { HookInput, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sdk";
 import type { Phase, Plan, PlanDecision } from "./protocol.js";
+import { DOMAIN, kindOf } from "./specialists.js";
 
 /** Tools that only read. Everything else in the flvstx server writes and needs an approved plan. */
 export const READ_TOOLS = new Set([
@@ -24,6 +25,14 @@ export interface PlanOutcome {
   notes?: string;
 }
 
+/** One change that actually landed. The producer verifies against this instead of a self-report. */
+export interface WriteEntry {
+  agent: string;
+  tool: string;
+  track?: string;
+  section?: string;
+}
+
 /**
  * One producer turn's state. The phase is what the write fence reads, so it is the single place
  * that decides whether the session can change.
@@ -32,7 +41,23 @@ export class ProducerRun {
   phase: Phase = "idle";
   revision = 0;
   planId: string | null = null;
+  /** What has been written since the plan was approved, in order, attributed. */
+  readonly writes: WriteEntry[] = [];
   private pending: { resolve: (o: PlanOutcome) => void } | null = null;
+
+  /** Called when a tool has actually succeeded — an attempted write is not a write. */
+  record(entry: WriteEntry) {
+    this.writes.push(entry);
+  }
+
+  /** Everything written to a `layer@section` target, as the plan's steps name them. */
+  targetsTouched(): string[] {
+    const seen = new Set<string>();
+    for (const w of this.writes) {
+      if (w.track) seen.add(`${w.track}@${w.section ?? "*"}`);
+    }
+    return [...seen];
+  }
 
   /** Parks until the user answers. Resolves (never rejects) so the tool always returns something. */
   await_decision(planId: string): Promise<PlanOutcome> {
@@ -70,6 +95,7 @@ export class ProducerRun {
     this.phase = "idle";
     this.revision = 0;
     this.planId = null;
+    this.writes.length = 0;
   }
 }
 
@@ -100,23 +126,73 @@ export function decisionResult(outcome: PlanOutcome, revision: number): string {
   }
 }
 
+const deny = (reason: string) => ({
+  hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: reason },
+});
+
+/** A refusal the user never sees is worth a line in the log; it is usually a brief that overreached. */
+const denyLogged = (reason: string, log: (...a: unknown[]) => void) => {
+  log(`fence: denied — ${reason}`);
+  return deny(reason);
+};
+
 /**
- * The write fence. Registered for `mcp__flvstx__*` only, so anything reaching it is one of our
- * tools. Reads are always allowed — the producer has to see the song to plan it — but nothing may
- * change the session until a plan has been approved.
+ * The fence. Registered for `mcp__flvstx__*` only, so anything reaching it is one of our tools.
+ * Reads are always allowed — nobody can write music they have not heard — and two rules apply to
+ * everything else: nothing may change the session until the user has approved a plan, and no
+ * specialist may write outside its own layers.
  */
-export function writeFence(run: ProducerRun) {
+export function toolFence(run: ProducerRun, log: (...a: unknown[]) => void = () => {}) {
   return async (input: HookInput) => {
     if (input.hook_event_name !== "PreToolUse") return {};
-    const tool = String((input as PreToolUseHookInput).tool_name).replace(/^mcp__flvstx__/, "");
-    if (READ_TOOLS.has(tool) || tool === "propose_plan" || run.phase === "executing") return {};
+    const h = input as PreToolUseHookInput;
+    log(`fence: ${h.tool_name} by ${h.agent_id ? h.agent_type : "producer"} phase=${run.phase}`);
+    const tool = String(h.tool_name).replace(/^mcp__flvstx__/, "");
+    if (READ_TOOLS.has(tool) || tool === "propose_plan") return {};
+    if (run.phase !== "executing") {
+      return denyLogged(
+        `'${tool}' would change the song, and the plan has not been approved yet. ` +
+          "Call propose_plan first and wait for the user's answer.",
+        log,
+      );
+    }
+    // `agent_id` is what distinguishes a subagent's call from the producer's own (sdk.d.ts:177).
+    const agent = h.agent_id ? h.agent_type : undefined;
+    const domain = agent ? DOMAIN[agent] : undefined;
+    // `add_layer` and `remove_layer` name a `kind`; everything else names a `track` (an id or a
+    // kind). Both resolve to a layer kind, which is what a domain is a list of.
+    const args = (h.tool_input ?? {}) as { track?: unknown; kind?: unknown };
+    const track = typeof args.track === "string" ? args.track : typeof args.kind === "string" ? args.kind : undefined;
+    if (domain && track !== undefined) {
+      const kind = kindOf(track);
+      if (kind && !domain.includes(kind)) {
+        return denyLogged(
+          `'${track}' is not yours to write: ${agent} owns ${domain.join(", ")}. ` +
+            "Do your part of the brief and tell the producer what the other layer needs — it will " +
+            "hand that to whoever owns it.",
+          log,
+        );
+      }
+    }
+    return {};
+  };
+}
+
+/**
+ * Subagents run in the background by default, so a step whose result the producer is about to use
+ * would return immediately and the next step would write over a session still being changed. Every
+ * delegation is made to block; parallelism, when we want it, will be an explicit decision.
+ */
+export function foregroundAgents() {
+  return async (input: HookInput) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const h = input as PreToolUseHookInput;
+    const inp = (h.tool_input ?? {}) as Record<string, unknown>;
+    if (inp.run_in_background === false) return {};
     return {
       hookSpecificOutput: {
         hookEventName: "PreToolUse" as const,
-        permissionDecision: "deny" as const,
-        permissionDecisionReason:
-          `'${tool}' would change the song, and the plan has not been approved yet. ` +
-          "Call propose_plan first and wait for the user's answer.",
+        updatedInput: { ...inp, run_in_background: false },
       },
     };
   };

@@ -65,6 +65,30 @@ outlive its turn (`agent/src/producer.ts`, tested in `agent/src/producer.test.ts
 The approval is enforced by a `PreToolUse` hook, not by the prompt: until the phase is `executing`,
 every `mcp__flvstx__*` tool outside the read set is denied with a reason the model can act on.
 
+### Specialists
+
+In producer mode the run has subagents (`agent/src/specialists.ts`), each a fresh context with its
+own craft prompt and a tool subset. Their frames carry `agent` — the `subagent_type`, taken from
+`parent_tool_use_id` + `subagent_type` on the SDK message — and the plugin colours and labels the
+transcript by it. `forwardSubagentText` is on, so a specialist's prose arrives as
+`assistant_message` with `agent` set; deltas from a specialist are dropped rather than streamed, or
+they would interleave into the producer's live bubble.
+
+| specialist | writes |
+|---|---|
+| `harmony-form` | key, tempo, sections, chord progressions, `chords`, `pad` |
+| `melody-topline` | `melody`, `counter_melody`, `harmony` (the vocal harmony line), lyrics |
+| `rhythm-section` | `drums`, `percussion`, `bass`, `sub` |
+| `arrangement-mix` | presence, instruments, energy, humanization — every layer |
+
+Only `harmony-form` is registered so far; the producer does the rest of the work itself, and the
+plan's `owner` still names the craft each step belongs to.
+
+The same hook enforces those boundaries: a specialist's write to a layer outside its domain is
+denied, naming the owner, and the run continues. Reads are never restricted — nobody can write music
+they have not heard. A second hook rewrites `run_in_background` to false on every delegation:
+subagents are backgrounded by default, and two agents writing to one session produce two songs.
+
 ### `plan`
 
 ```jsonc
