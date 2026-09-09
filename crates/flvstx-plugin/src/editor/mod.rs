@@ -1163,12 +1163,7 @@ fn open_project(shared: &Shared, st: &mut EditorState, path: &std::path::Path) -
         st.ui_scale = sc;
     }
     shared.load_persisted(p);
-    st.piano.selection.clear();
-    st.takes.clear();
-    st.take_track = None;
-    // The host's blob is stale now; sync_state writes the loaded song back out on the next frame.
-    st.last_loaded_hash = 0;
-    st.last_persisted_revision = u64::MAX;
+    adopt_session(shared, st);
     Ok(())
 }
 
@@ -1181,12 +1176,38 @@ fn new_project(shared: &Shared, st: &mut EditorState) {
     if let Ok(mut s) = shared.agent_session_id.lock() {
         *s = None;
     }
+    adopt_session(shared, st);
+    set_project_path(None);
+}
+
+/// Makes the session in `shared` the one the editor considers current: writes it straight into the
+/// persisted blob and records its hash. Without this, `sync_state`'s project-load detection sees the
+/// *previous* song still sitting in `state_json`, decides the host has loaded a project, and puts it
+/// back — so New and Open would both undo themselves on the next frame.
+fn adopt_session(shared: &Shared, st: &mut EditorState) {
     st.piano.selection.clear();
     st.takes.clear();
     st.take_track = None;
-    st.last_loaded_hash = 0;
-    st.last_persisted_revision = u64::MAX;
-    set_project_path(None);
+    let mut p = shared.to_persisted();
+    p.ui_scale = Some(st.ui_scale);
+    if let Ok(s) = serde_json::to_string(&p) {
+        st.last_loaded_hash = crate::hash_str(&s);
+        if let Ok(mut w) = st.params.state_json.write() {
+            w.clone_from(&s);
+        }
+        // The standalone reopens its autosave on launch, so that has to move now too — otherwise
+        // starting a new song and closing the app would bring the old one back.
+        if is_standalone() {
+            if let Some(path) = autosave_path() {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(path, &s);
+            }
+        }
+    }
+    st.last_persisted_revision = shared.lock_store().revision;
+    st.last_autosave = Some(std::time::Instant::now());
 }
 
 /// Applies a project file picked in the dialog thread.
