@@ -28,16 +28,21 @@ function text(v: unknown) {
   return JSON.stringify(v, null, 1);
 }
 
-function wrap(rpc: Rpc, method: string, onCall?: (name: string, input: unknown, result: string, ok: boolean) => void) {
-  return async (input: Record<string, unknown>) => {
+/// Reported for every tool call. `toolUseId` is what lets the UI pair a result with its call — and,
+/// once specialists exist, attribute both to the agent that made them.
+export type ToolReport = (name: string, input: unknown, result: string, ok: boolean, toolUseId?: string) => void;
+
+function wrap(rpc: Rpc, method: string, onCall?: ToolReport) {
+  return async (input: Record<string, unknown>, extra: unknown) => {
+    const toolUseId = (extra as { toolUseId?: string } | undefined)?.toolUseId;
     try {
       const r = await rpc.call(method, input);
       const s = text(r);
-      onCall?.(method, input, s, true);
+      onCall?.(method, input, s, true, toolUseId);
       return { content: [{ type: "text" as const, text: s }] };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      onCall?.(method, input, msg, false);
+      onCall?.(method, input, msg, false, toolUseId);
       return { content: [{ type: "text" as const, text: `ERROR: ${msg}` }], isError: true };
     }
   };
@@ -133,7 +138,7 @@ export async function readReference(input: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: body }] };
 }
 
-export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, result: string, ok: boolean) => void) {
+export function makeServer(rpc: Rpc, onCall?: ToolReport) {
   const genParams = z
     .object({
       style: z.string().optional().describe("style hint, e.g. pop, lofi, trap, house, cinematic, kids"),
@@ -247,9 +252,9 @@ export function makeServer(rpc: Rpc, onCall?: (name: string, input: unknown, res
         section: z.string().optional().describe("return only this heading's section"),
         max_chars: z.number().int().min(500).max(20000).optional(),
       },
-      async (input: Record<string, unknown>) => {
+      async (input: Record<string, unknown>, extra: unknown) => {
         const r = await readReference(input);
-        onCall?.("read_reference", input, r.content[0].text.slice(0, 200), !("isError" in r));
+        onCall?.("read_reference", input, r.content[0].text.slice(0, 200), !("isError" in r), (extra as { toolUseId?: string } | undefined)?.toolUseId);
         return r;
       },
     ),

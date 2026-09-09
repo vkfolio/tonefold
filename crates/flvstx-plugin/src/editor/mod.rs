@@ -387,12 +387,12 @@ impl EditorState {
                     shared.push_chat(ChatRole::System, format!("composer disconnected ({reason})"));
                 }
                 AgentEvent::Ready { backend, .. } => self.status = format!("agent ready ({backend})"),
-                AgentEvent::AssistantDelta { text } => self.streaming.push_str(&text),
-                AgentEvent::AssistantMessage { text } => {
+                AgentEvent::AssistantDelta { text, .. } => self.streaming.push_str(&text),
+                AgentEvent::AssistantMessage { text, .. } => {
                     self.streaming.clear();
                     shared.push_chat(ChatRole::Assistant, text);
                 }
-                AgentEvent::ToolCall { name, input } => {
+                AgentEvent::ToolCall { name, input, .. } => {
                     let short = summarize_input(&name, &input);
                     shared.push_chat(ChatRole::Tool, format!("{name} {short}"));
                 }
@@ -408,11 +408,13 @@ impl EditorState {
                         }
                     }
                 }
-                AgentEvent::Error { message } => {
+                AgentEvent::Error { message, .. } => {
                     self.turn_active = false;
                     shared.push_chat(ChatRole::System, format!("error: {message}"));
                 }
                 AgentEvent::Pong => {}
+                // Frames from a newer sidecar than this build: already logged, nothing to show.
+                AgentEvent::Unknown => {}
             }
         }
     }

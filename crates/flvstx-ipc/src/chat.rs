@@ -72,12 +72,12 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         let mut streaming_line = false;
         loop {
             match client.recv_timeout(Duration::from_secs(600)) {
-                Some(AgentEvent::AssistantDelta { text }) => {
+                Some(AgentEvent::AssistantDelta { text, .. }) => {
                     print!("{text}");
                     out.flush()?;
                     streaming_line = true;
                 }
-                Some(AgentEvent::AssistantMessage { text }) => {
+                Some(AgentEvent::AssistantMessage { text, .. }) => {
                     if !streaming_line {
                         println!("\nclaude> {text}");
                     } else {
@@ -85,7 +85,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                         streaming_line = false;
                     }
                 }
-                Some(AgentEvent::ToolCall { name, input }) => {
+                Some(AgentEvent::ToolCall { name, input, .. }) => {
                     if streaming_line {
                         println!();
                         streaming_line = false;
@@ -93,7 +93,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                     let short = serde_json::to_string(&input).unwrap_or_default();
                     println!("  [tool] {name} {}", short.chars().take(160).collect::<String>());
                 }
-                Some(AgentEvent::ToolResult { name, summary }) => {
+                Some(AgentEvent::ToolResult { name, summary, .. }) => {
                     println!("  [result] {name}: {}", summary.lines().take(3).collect::<Vec<_>>().join(" | ").chars().take(200).collect::<String>());
                 }
                 Some(AgentEvent::Done { turns, cost_usd, .. }) => {
@@ -103,7 +103,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                     println!("  [done] turns={turns} cost={}", cost_usd.map(|c| format!("${c:.3}")).unwrap_or_else(|| "-".into()));
                     break;
                 }
-                Some(AgentEvent::Error { message }) => {
+                Some(AgentEvent::Error { message, .. }) => {
                     println!("\n  [error] {message}");
                     break;
                 }

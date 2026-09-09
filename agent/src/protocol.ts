@@ -7,14 +7,14 @@ export type ClientMessage =
   | { type: "ping" };
 
 export type AgentMessage =
-  | { type: "ready"; backend: "sdk" | "cli"; version: string }
-  | { type: "assistant_delta"; text: string }
-  | { type: "assistant_message"; text: string }
-  | { type: "tool_call"; name: string; input: unknown }
-  | { type: "tool_result"; name: string; summary: string }
+  | { type: "ready"; backend: "sdk" | "cli"; version: string; modes?: string[] }
+  | { type: "assistant_delta"; text: string; agent?: string }
+  | { type: "assistant_message"; text: string; agent?: string }
+  | { type: "tool_call"; name: string; input: unknown; tool_use_id?: string; agent?: string }
+  | { type: "tool_result"; name: string; summary: string; tool_use_id?: string; agent?: string; ok?: boolean }
   | { type: "rpc"; id: number; method: string; params: unknown }
-  | { type: "done"; session_id: string; cost_usd?: number; turns: number }
-  | { type: "error"; message: string }
+  | { type: "done"; session_id: string; cost_usd?: number; turns: number; mode?: string }
+  | { type: "error"; message: string; code?: string; agent?: string }
   | { type: "pong" };
 
 /** Something that can run session operations on the plugin (or CLI) side. */

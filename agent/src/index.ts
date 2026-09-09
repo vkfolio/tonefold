@@ -45,6 +45,11 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+/** Which agent produced a message: a subagent's type, or undefined for the main thread. */
+function authorOf(msg: { parent_tool_use_id?: string | null; subagent_type?: string }): string | undefined {
+  return msg.parent_tool_use_id ? msg.subagent_type ?? "specialist" : undefined;
+}
+
 class Connection implements Rpc {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -55,6 +60,8 @@ class Connection implements Rpc {
   private sessionId = "";
   private lastContext = "";
   private model: string | undefined = MODEL;
+  /** tool_use id -> the subagent that made the call, so its result can be attributed too. */
+  private agentOf = new Map<string, string | undefined>();
 
   constructor(private ws: WebSocket) {
     ws.on("message", (data) => this.onMessage(data.toString()));
@@ -139,8 +146,15 @@ class Connection implements Rpc {
   }
 
   private async runLoop() {
-    const server = makeServer(this, (name, input, result, ok) => {
-      this.send({ type: "tool_result", name, summary: ok ? result.slice(0, 400) : `ERROR: ${result.slice(0, 400)}` });
+    const server = makeServer(this, (name, input, result, ok, toolUseId) => {
+      this.send({
+        type: "tool_result",
+        name,
+        summary: ok ? result.slice(0, 400) : `ERROR: ${result.slice(0, 400)}`,
+        tool_use_id: toolUseId,
+        agent: toolUseId ? this.agentOf.get(toolUseId) : undefined,
+        ok,
+      });
     });
     const resume = this.sessionId || undefined;
     log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${this.model ?? "default"}`);
@@ -175,19 +189,24 @@ class Connection implements Rpc {
         case "stream_event": {
           const ev = any.event;
           if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+            // A forwarded subagent's prose must not interleave into the main bubble character by
+            // character, so deltas carry the author and the UI decides where to put them.
             streamedText += ev.delta.text;
-            this.send({ type: "assistant_delta", text: ev.delta.text });
+            this.send({ type: "assistant_delta", text: ev.delta.text, agent: authorOf(any) });
           }
           break;
         }
         case "assistant": {
+          const agent = authorOf(any);
           for (const b of any.message?.content ?? []) {
             if (b.type === "tool_use") {
               const name = String(b.name).replace(/^mcp__flvstx__/, "");
               if (name === "ToolSearch") continue;
-              this.send({ type: "tool_call", name, input: b.input });
+              // Remember who owns this call so its result can be attributed too.
+              if (b.id) this.agentOf.set(b.id, agent);
+              this.send({ type: "tool_call", name, input: b.input, tool_use_id: b.id, agent });
             } else if (b.type === "text" && b.text) {
-              this.send({ type: "assistant_message", text: b.text });
+              this.send({ type: "assistant_message", text: b.text, agent });
               streamedText = "";
             }
           }
@@ -208,6 +227,10 @@ class Connection implements Rpc {
           break;
         }
         default:
+          // Everything else — task lifecycle, tool progress, hooks, compaction. Producer mode turns
+          // several of these into real events; until then, log the shapes so the next phase is
+          // written against what actually arrives rather than against the type union.
+          log(`sdk message: ${msg.type}${any.subtype ? `/${any.subtype}` : ""}${any.parent_tool_use_id ? " (subagent)" : ""}`);
           break;
       }
     }

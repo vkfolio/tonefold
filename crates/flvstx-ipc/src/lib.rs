@@ -21,14 +21,32 @@ pub const DEFAULT_PORT: u16 = 7878;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    Ready { backend: String, #[serde(default)] version: String },
-    AssistantDelta { text: String },
-    AssistantMessage { text: String },
-    ToolCall { name: String, #[serde(default)] input: Value },
-    ToolResult { name: String, #[serde(default)] summary: String },
+    Ready { backend: String, #[serde(default)] version: String, #[serde(default)] modes: Vec<String> },
+    AssistantDelta { text: String, #[serde(default)] agent: Option<String> },
+    AssistantMessage { text: String, #[serde(default)] agent: Option<String> },
+    ToolCall {
+        name: String,
+        #[serde(default)]
+        input: Value,
+        #[serde(default)]
+        tool_use_id: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+    },
+    ToolResult {
+        name: String,
+        #[serde(default)]
+        summary: String,
+        #[serde(default)]
+        tool_use_id: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        ok: Option<bool>,
+    },
     Rpc { id: u64, method: String, #[serde(default)] params: Value },
-    Done { #[serde(default)] session_id: String, #[serde(default)] cost_usd: Option<f64>, #[serde(default)] turns: u32 },
-    Error { message: String },
+    Done { #[serde(default)] session_id: String, #[serde(default)] cost_usd: Option<f64>, #[serde(default)] turns: u32, #[serde(default)] mode: Option<String> },
+    Error { message: String, #[serde(default)] code: Option<String>, #[serde(default)] agent: Option<String> },
     Pong,
     /// Synthesised locally.
     #[serde(skip)]
@@ -38,6 +56,12 @@ pub enum AgentEvent {
     /// A session mutation happened while serving an RPC (UI should refresh).
     #[serde(skip)]
     SessionChanged,
+    /// A frame this build does not understand. The sidecar and the plugin ship separately and the
+    /// sidecar gains events first, so an unknown tag has to be ignorable — before this existed,
+    /// every such frame became a red line in the user's transcript. Must stay last: serde requires
+    /// the catch-all to be the final variant.
+    #[serde(other)]
+    Unknown,
 }
 
 enum Outgoing {
@@ -207,10 +231,17 @@ fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, 
                                 }
                             }
                         }
-                        let _ = etx.send(ev);
+                        if matches!(ev, AgentEvent::Unknown) {
+                            log_frame(&format!("ignoring unknown agent frame: {}", text.chars().take(160).collect::<String>()));
+                        } else {
+                            let _ = etx.send(ev);
+                        }
                     }
                     Err(e) => {
-                        let _ = etx.send(AgentEvent::Error { message: format!("bad frame from agent: {e}: {}", text.chars().take(200).collect::<String>()) });
+                        // A known tag with a shape this build cannot read. Worth a log line, not a
+                        // wall of red in the transcript.
+                        let tag = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["type"].as_str().map(str::to_owned)).unwrap_or_default();
+                        log_frame(&format!("agent frame '{tag}' did not parse: {e}"));
                     }
                 }
             }
@@ -225,6 +256,16 @@ fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, 
 }
 
 /// Builds the context string sent with each user message.
+/// Diagnostics for frames the UI cannot use. Goes to the agent log rather than the transcript.
+fn log_frame(msg: &str) {
+    let dir = flvstx_core::midi::default_export_dir();
+    let path = dir.parent().unwrap_or(&dir).join("agent.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "[plugin] {msg}");
+    }
+}
+
 pub fn context_for(store: &Store) -> String {
     describe(&store.session)
 }
@@ -283,4 +324,38 @@ pub fn spawn_agent(port: u16) -> std::io::Result<std::process::Child> {
 /// True if something is already listening on the port.
 pub fn port_open(port: u16) -> bool {
     TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(200)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sidecar and the plugin ship separately and the sidecar learns new frames first, so an
+    /// unknown event must be ignorable rather than an error in the user's transcript.
+    #[test]
+    fn unknown_frames_are_tolerated() {
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"plan_proposed","plan_id":"p1","plan":{}}"#).expect("unknown tag must parse");
+        assert!(matches!(ev, AgentEvent::Unknown));
+    }
+
+    /// ...and a known frame that gains fields must still load on an older build.
+    #[test]
+    fn new_fields_default() {
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"tool_call","name":"generate","input":{}}"#).unwrap();
+        match ev {
+            AgentEvent::ToolCall { name, tool_use_id, agent, .. } => {
+                assert_eq!(name, "generate");
+                assert!(tool_use_id.is_none() && agent.is_none());
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"tool_call","name":"generate","input":{},"tool_use_id":"tu_1","agent":"rhythm-section"}"#).unwrap();
+        match ev {
+            AgentEvent::ToolCall { tool_use_id, agent, .. } => {
+                assert_eq!(tool_use_id.as_deref(), Some("tu_1"));
+                assert_eq!(agent.as_deref(), Some("rhythm-section"));
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
 }
