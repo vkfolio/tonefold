@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0 — 2026-09-12
+
+Compose on an Ollama model — the one on this PC or one across the room — instead of Claude.
+
+### Ollama
+
+- The composer and the producer can run on an **Ollama** model — the Ollama on this PC or one on
+  another machine — instead of Claude. The chat header has a Claude / Ollama switch, a server URL
+  field and a model picker filled from what that server has pulled; the choice is saved with the
+  project. Terminal chat: `/ollama [URL]`, `/models`, `/model NAME`, `/claude`.
+- Claude and Ollama keep separate conversations per mode, so switching back to Claude resumes
+  where it left off. No cost is shown for local turns.
+- Under the hood the sidecar hosts a small bridge onto Ollama's native chat API rather than using
+  its Anthropic-compatible endpoint: that endpoint cannot set the context window and truncated the
+  composer's brief to 2048 tokens, after which the model invented tools. `FLVSTX_OLLAMA_NUM_CTX`
+  (default 16384, capped at the model's limit) is the window the bridge asks for.
+- **Think** checkbox for Ollama (off by default: on a small GPU it is minutes of deliberation
+  before the first tool call), and the model's reasoning now shows in the transcript as it
+  streams, collapsed once the answer arrives — for Claude's summaries too.
+
 ## 1.2.0 — 2026-09-09
 
 A producer that plans the work, asks before it writes, and hands each part to a specialist.
