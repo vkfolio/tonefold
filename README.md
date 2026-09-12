@@ -68,7 +68,8 @@ scripts\package.ps1                                 # or make a release zip
 
 Layout: `crates/flvstx-core` is the engine (theory, generators, humanization, MIDI, rendering) with
 no plugin dependencies; `crates/flvstx-plugin` is the nih-plug CLAP/VST3/standalone and its egui
-editor; `crates/flvstx-cli` is the command line; `agent/` is the Claude Agent SDK sidecar.
+editor; `crates/flvstx-cli` is the command line; `agent/` is the Claude Agent SDK sidecar (which can
+also run on an Ollama model, local or remote — see `docs/usage.md`).
 
 ## Licence
 

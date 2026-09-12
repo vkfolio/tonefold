@@ -4,11 +4,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { makeServer, TOOL_NAMES } from "./tools.js";
 import { systemPrompt, AGENT_ROOT } from "./prompt.js";
-import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Rpc } from "./protocol.js";
+import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Provider, Rpc } from "./protocol.js";
+import { asProvider, DEFAULT_OLLAMA_URL, listOllamaModels, normalizeOllamaUrl, providerEnv, PROVIDERS } from "./providers.js";
+import { DEFAULT_NUM_CTX, startShim, type Shim } from "./ollama-shim.js";
 import { checklist, decisionResult, foregroundAgents, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
 import { SPECIALISTS } from "./specialists.js";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const args = process.argv.slice(2);
 const flag = (n: string) => {
   const i = args.indexOf(n);
@@ -16,6 +18,14 @@ const flag = (n: string) => {
 };
 const PORT = Number(flag("--port") ?? process.env.FLVSTX_PORT ?? 7878);
 const MODEL = flag("--model") ?? process.env.FLVSTX_MODEL; // undefined = CLI default
+// Where the model runs unless a turn says otherwise: "claude" (the user's login) or "ollama".
+const PROVIDER: Provider = asProvider(flag("--provider") ?? process.env.FLVSTX_PROVIDER);
+const OLLAMA_URL = normalizeOllamaUrl(flag("--ollama-url") ?? process.env.FLVSTX_OLLAMA_URL ?? process.env.OLLAMA_HOST ?? DEFAULT_OLLAMA_URL);
+// Context window asked of an Ollama model (capped at what the model supports). The server's
+// default is far too small for the prompt and tool schemas, and it truncates silently.
+const OLLAMA_NUM_CTX = Number(flag("--ollama-ctx") ?? process.env.FLVSTX_OLLAMA_NUM_CTX ?? DEFAULT_NUM_CTX) || DEFAULT_NUM_CTX;
+// Thinking is off for local models unless asked for: it multiplies the time to the first tool call.
+const OLLAMA_THINK = ["1", "true", "on"].includes(String(process.env.FLVSTX_OLLAMA_THINK ?? "").toLowerCase());
 const MAX_TURNS = Number(flag("--max-turns") ?? 40);
 
 const log = (...a: unknown[]) => console.error(`[flvstx-agent ${new Date().toISOString().slice(11, 19)}]`, ...a);
@@ -61,9 +71,20 @@ class Connection implements Rpc {
   private turnActive = false;
   private lastContext = "";
   private model: string | undefined = MODEL;
+  private provider: Provider = PROVIDER;
+  private baseUrl = OLLAMA_URL;
+  /** The forwarder the CLI is pointed at when the provider is Ollama (see ollama-shim.ts). */
+  private shim: Shim | null = null;
+  /** Ollama: whether the model may think. Read by the shim per request, so it can change any turn. */
+  private think = OLLAMA_THINK;
   private mode: Mode = "composer";
-  /** One conversation per mode: their tools and personas differ, so they cannot share a session. */
-  private sessionIds: Record<Mode, string> = { composer: "", producer: "" };
+  /**
+   * One conversation per provider and mode. The modes' tools and personas differ, so they cannot
+   * share a session; and a transcript written with Claude is not resumed under a local model — it
+   * would replay the whole conversation into a context the small model may not have, and the
+   * local model's turns are not what the user wants Claude to continue from either.
+   */
+  private sessionIds = new Map<string, string>();
   private run = new ProducerRun();
   /** tool_use id -> the subagent that made the call, so its result can be attributed too. */
   private agentOf = new Map<string, string | undefined>();
@@ -72,11 +93,21 @@ class Connection implements Rpc {
     ws.on("message", (data) => this.onMessage(data.toString()));
     ws.on("close", () => this.dispose());
     ws.on("error", (e) => log("ws error", e.message));
-    this.send({ type: "ready", backend: "sdk", version: VERSION, modes: ["composer", "producer"] });
+    this.send({ type: "ready", backend: "sdk", version: VERSION, modes: ["composer", "producer"], providers: PROVIDERS, ollama_url: OLLAMA_URL });
   }
 
   send(m: AgentMessage) {
     if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+  }
+
+  private get sessionKey() {
+    return `${this.provider}:${this.mode}`;
+  }
+  private get sessionId(): string {
+    return this.sessionIds.get(this.sessionKey) ?? "";
+  }
+  private set sessionId(id: string) {
+    this.sessionIds.set(this.sessionKey, id);
   }
 
   call(method: string, params: unknown): Promise<unknown> {
@@ -123,21 +154,36 @@ class Connection implements Rpc {
         this.send({ type: "plan_resolved", plan_id: m.plan_id, decision: settled ? m.decision : "stale", notes: m.notes });
         return;
       }
+      case "list_models": {
+        const base = normalizeOllamaUrl(m.base_url ?? this.baseUrl);
+        listOllamaModels(base)
+          .then((models) => this.send({ type: "models", provider: "ollama", base_url: base, models }))
+          .catch((e: Error) => this.send({ type: "models", provider: "ollama", base_url: base, models: [], error: e.message }));
+        return;
+      }
       case "user_message": {
         if (this.turnActive) return this.send({ type: "error", message: "a turn is already running; cancel it first" });
-        if (m.session_id && !this.sessionIds[this.mode]) this.sessionIds[this.mode] = m.session_id;
         this.lastContext = m.context ?? "";
         const wantedMode: Mode = m.mode === "producer" ? "producer" : "composer";
-        const wanted = m.model && m.model !== "default" ? m.model : MODEL;
+        const wantedProvider = m.provider ? asProvider(m.provider) : PROVIDER;
+        const wantedUrl = wantedProvider === "ollama" ? normalizeOllamaUrl(m.base_url ?? this.baseUrl) : this.baseUrl;
+        const wanted = m.model && m.model !== "default" ? m.model : wantedProvider === "ollama" ? undefined : MODEL;
+        if (typeof m.think === "boolean") this.think = m.think;
+        if (wantedProvider === "ollama" && !wanted) {
+          // The CLI's default is a Claude model name, which no Ollama server has.
+          return this.send({ type: "error", code: "no_model", message: "pick an Ollama model first (the list comes from the server's /api/tags)" });
+        }
         // The two modes differ in tools, hooks and persona — all frozen when the query is created —
         // so a mode change ends the current session and starts the other one, which resumes its own
-        // conversation by id.
-        if (wantedMode !== this.mode || wanted !== this.model) {
+        // conversation by id. So does a provider or server change: the environment is frozen too.
+        if (wantedMode !== this.mode || wanted !== this.model || wantedProvider !== this.provider || wantedUrl !== this.baseUrl) {
           this.mode = wantedMode;
+          this.provider = wantedProvider;
+          this.baseUrl = wantedUrl;
           // Model change: end the current SDK session; the next one resumes the conversation with the new model.
           this.model = wanted;
           if (this.q) {
-            log(`restarting session: mode=${this.mode} model=${wanted ?? "default"}`);
+            log(`restarting session: mode=${this.mode} provider=${this.provider} model=${wanted ?? "default"}`);
             this.inbox.close();
             this.q.interrupt().catch(() => {});
             this.q = null;
@@ -145,6 +191,10 @@ class Connection implements Rpc {
             this.inbox = new Inbox();
           }
         }
+        // The client remembers conversations per provider and mode (they survive a sidecar
+        // restart); adopt its id only once the key is settled above, and never over one this
+        // process has already seen.
+        if (m.session_id && !this.sessionId) this.sessionId = m.session_id;
         this.turnActive = true;
         if (this.mode === "producer") this.setPhase("planning");
         const text = m.context ? `<session_state>\n${m.context}\n</session_state>\n\n${m.text}` : m.text;
@@ -177,8 +227,21 @@ class Connection implements Rpc {
     });
   }
 
+  /** The base URL the CLI gets for the current provider: Claude's own, or a shim onto Ollama. */
+  private async cliBaseUrl(): Promise<string> {
+    if (this.provider !== "ollama") return this.baseUrl;
+    const target = normalizeOllamaUrl(this.baseUrl);
+    if (this.shim && this.shim.target !== new URL(target).origin) {
+      this.shim.close();
+      this.shim = null;
+    }
+    if (!this.shim) this.shim = await startShim(target, log, OLLAMA_NUM_CTX, () => this.think);
+    return this.shim.url;
+  }
+
   private async runLoop() {
     const producer = this.mode === "producer";
+    const cliBase = await this.cliBaseUrl();
     const reviewPlan = producer
       ? async (plan: Plan) => {
           const planId = `plan-${Date.now().toString(36)}`;
@@ -229,13 +292,15 @@ class Connection implements Rpc {
       },
       reviewPlan ? { reviewPlan, ledger: () => this.run.writes } : undefined,
     );
-    const resume = this.sessionIds[this.mode] || undefined;
-    log(`starting SDK session${resume ? ` (resume ${resume})` : ""} model=${this.model ?? "default"}`);
+    const resume = this.sessionId || undefined;
+    log(`starting SDK session${resume ? ` (resume ${resume})` : ""} provider=${this.provider}${this.provider === "ollama" ? ` url=${this.baseUrl}` : ""} model=${this.model ?? "default"}`);
     this.q = query({
       prompt: this.inbox,
       options: {
         systemPrompt: systemPrompt(this.mode),
         model: this.model,
+        // Ollama: the CLI is pointed at the server instead of Anthropic. Undefined inherits.
+        env: providerEnv(this.provider, cliBase),
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },
@@ -300,6 +365,8 @@ class Connection implements Rpc {
             // character, so deltas carry the author and the UI decides where to put them.
             streamedText += ev.delta.text;
             this.send({ type: "assistant_delta", text: ev.delta.text, agent: authorOf(any) });
+          } else if (ev?.type === "content_block_delta" && ev.delta?.type === "thinking_delta" && ev.delta.thinking) {
+            this.send({ type: "thinking_delta", text: ev.delta.thinking, agent: authorOf(any) });
           }
           break;
         }
@@ -315,21 +382,26 @@ class Connection implements Rpc {
             } else if (b.type === "text" && b.text) {
               this.send({ type: "assistant_message", text: b.text, agent });
               streamedText = "";
+            } else if (b.type === "thinking" && b.thinking) {
+              this.send({ type: "thinking", text: b.thinking, agent });
             }
           }
           break;
         }
         case "result": {
           turns = any.num_turns ?? turns;
-          this.sessionIds[this.mode] = any.session_id ?? this.sessionIds[this.mode];
+          if (any.session_id) this.sessionId = any.session_id;
           this.turnActive = false;
+          // The CLI prices every turn as if Anthropic served it; a local model cost nothing.
+          const cost_usd = this.provider === "ollama" ? undefined : any.total_cost_usd;
+          const done = { type: "done" as const, session_id: this.sessionId, cost_usd, turns, mode: this.mode, provider: this.provider };
           if (any.subtype === "success") {
-            this.send({ type: "done", session_id: this.sessionIds[this.mode], cost_usd: any.total_cost_usd, turns, mode: this.mode });
+            this.send(done);
           } else {
             const err = any.errors?.join("; ") || any.subtype || "unknown error";
             log("turn ended with", any.subtype, err);
             this.send({ type: "error", message: `turn ended: ${err}` });
-            this.send({ type: "done", session_id: this.sessionIds[this.mode], cost_usd: any.total_cost_usd, turns, mode: this.mode });
+            this.send(done);
           }
           break;
         }
@@ -361,6 +433,8 @@ class Connection implements Rpc {
     if (this.q) this.q.interrupt().catch(() => {});
     for (const p of this.pending.values()) p.reject(new Error("connection closed"));
     this.pending.clear();
+    this.shim?.close();
+    this.shim = null;
     log("client disconnected");
   }
 }

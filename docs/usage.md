@@ -26,9 +26,38 @@ cd agent && npm ci && npm run build && cd ..
 by default; do not add custom paths, FL treats added paths as VST2) and favourite FLVSTX. Prefer the **CLAP** build in FL Studio.
 
 The composer sidecar needs Node 22 and your Claude Code login (`claude` must be logged in on this
-PC). The plugin starts `node agent/dist/index.js --port 7878` on the first chat message; set
-`FLVSTX_AGENT_DIR` if the repo is not at `D:\FLVSTX`, `FLVSTX_PORT` to change the port, and
-`FLVSTX_MODEL` to force a model.
+PC) — or an Ollama server, see below. The plugin starts `node agent/dist/index.js --port 7878` on
+the first chat message; set `FLVSTX_AGENT_DIR` if the repo is not at `D:\FLVSTX`, `FLVSTX_PORT` to
+change the port, and `FLVSTX_MODEL` to force a model. `FLVSTX_PROVIDER=ollama` and
+`FLVSTX_OLLAMA_URL` make Ollama the sidecar's default; `FLVSTX_OLLAMA_NUM_CTX` (default 16384) is
+the context window it asks a local model for, and `FLVSTX_OLLAMA_THINK=1` makes **Think** the default.
+
+### Running on Ollama instead of Claude
+
+The chat header has a **Claude / Ollama** switch. On Ollama, type the server's URL (the default
+`http://localhost:11434` is the Ollama on this PC; another machine works too if Ollama there was
+started with `OLLAMA_HOST=0.0.0.0`), pick a model from the list the server reports, and chat as
+usual. **↻** asks the server again after you `ollama pull` something. **Think** lets a thinking
+model reason before it answers: better on hard requests, much slower on a small GPU, and the
+reasoning shows in the transcript as it goes (collapsed once the answer arrives). The choices are
+saved with the project. The terminal chat has the same: `/ollama [URL]`, `/models`, `/model NAME`,
+`/think on|off`, `/claude`.
+
+What to expect:
+
+- **Pick a model with tool calling** — `ollama show NAME` lists `tools` under Capabilities. The
+  composer works entirely through tools; a model without them can only talk.
+- **Size matters, both ways.** Every turn carries the composer's whole brief and 32 tool schemas
+  (about 10k tokens), so very small models lose the thread. But a model that does not fit your
+  GPU runs on the CPU at a couple of tokens a second: on an 8 GB card a 27B model is a
+  ten-minute turn, an 8B one (`ollama pull qwen3:8b`) is well under a minute. `ollama ps` shows
+  how much of the model is in VRAM. The first turn after a model loads is the slowest.
+- **Producer mode** runs the same specialists on the local model. It works, but it is many long
+  turns, and a model that mislabels a layer or skips a step will be caught by the checklist rather
+  than by its own care.
+- **No cost is shown**: nothing leaves your machine (or your network, for a remote server).
+- Claude and Ollama keep separate conversations. Switching back to Claude resumes where Claude
+  left off.
 
 ## Editor layout and composer
 
@@ -77,7 +106,8 @@ for it when the engine's takes are all the same shape and you want judgement rat
 the section; `Generate song` fills the whole song with continuity (later sections reuse the first melody's
 motif, the final chorus is the biggest, builds roll into the next section, intros/breaks are sparse).
 
-The chat header has a model picker (default / sonnet / opus) that applies to the next message.
+The chat header has a model picker (default / sonnet / opus) that applies to the next message, and
+the Claude / Ollama switch described above.
 
 ## Built-in sounds, drag-out, standalone
 

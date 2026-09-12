@@ -1,6 +1,6 @@
 //! Terminal chat harness: the same RPC bridge the plugin uses, driven from stdin.
 
-use crate::{context_for, port_open, spawn_agent, AgentClient, AgentEvent, Plan};
+use crate::{context_for, port_open, spawn_agent, AgentClient, AgentEvent, Backend, Plan, DEFAULT_OLLAMA_URL};
 use flvstx_core::ops::Store;
 use flvstx_core::Session;
 use std::io::{BufRead, Write};
@@ -24,11 +24,16 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
     }
     eprintln!("[chat] connected. Type a message, or /session, /export, /undo, /save, /quit.");
     eprintln!("[chat] /producer plans before it writes and asks you to approve; /composer answers straight away.");
+    eprintln!("[chat] /ollama [URL] runs on an Ollama server (then /models to list, /model NAME to pick); /claude switches back.");
+    eprintln!("[chat] /think on|off lets an Ollama model think before answering (slower; shown as it goes).");
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     // Which persona the sidecar runs. Switching ends one SDK session and resumes the other.
     let mut mode = String::from("composer");
     let mut model: Option<String> = None;
+    let mut provider = String::from("claude");
+    let mut ollama_url = String::from(DEFAULT_OLLAMA_URL);
+    let mut think = false;
     loop {
         print!("\n{mode}> ");
         out.flush()?;
@@ -83,8 +88,43 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
             println!("model: {}", model.as_deref().unwrap_or("default"));
             continue;
         }
+        if line == "/claude" {
+            provider = "claude".into();
+            model = None;
+            println!("provider: claude (model: default)");
+            continue;
+        }
+        if line == "/ollama" || line.starts_with("/ollama ") {
+            provider = "ollama".into();
+            if let Some(url) = line.strip_prefix("/ollama").map(str::trim).filter(|u| !u.is_empty()) {
+                ollama_url = url.to_string();
+            }
+            println!("provider: ollama at {ollama_url} — /models lists what it can run, /model NAME picks one");
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("/think") {
+            think = matches!(rest.trim(), "on" | "1" | "true" | "yes");
+            println!("think: {}", if think { "on" } else { "off" });
+            continue;
+        }
+        if line == "/models" {
+            client.list_models(&ollama_url);
+            match wait_for_models(&client) {
+                Some(AgentEvent::Models { models, error: None, base_url, .. }) => {
+                    println!("{base_url}: {}", if models.is_empty() { "no models pulled yet".to_string() } else { models.join(", ") });
+                }
+                Some(AgentEvent::Models { error: Some(e), .. }) => println!("error: {e}"),
+                _ => println!("no answer from the sidecar"),
+            }
+            continue;
+        }
+        if provider == "ollama" && model.is_none() {
+            println!("pick an Ollama model first: /models, then /model NAME");
+            continue;
+        }
         let ctx = context_for(&store.lock().unwrap());
-        client.send_user_message_in(line, &ctx, model.as_deref(), &mode);
+        let backend = Backend { provider: provider.clone(), base_url: ollama_url.clone(), model: model.clone(), think: Some(think) };
+        client.send_turn(line, &ctx, &backend, &mode);
         // Stream events until done.
         let mut streaming_line = false;
         let mut last_step = String::new();
@@ -94,6 +134,21 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
                     print!("{text}");
                     out.flush()?;
                     streaming_line = true;
+                }
+                Some(AgentEvent::ThinkingDelta { .. }) => {
+                    // Reasoning streams as dots rather than prose, so it is visibly alive without
+                    // burying the answer; the whole block prints once it is done.
+                    print!(".");
+                    out.flush()?;
+                    streaming_line = true;
+                }
+                Some(AgentEvent::Thinking { text, .. }) => {
+                    if streaming_line {
+                        println!();
+                        streaming_line = false;
+                    }
+                    let short: String = text.chars().take(300).collect();
+                    println!("  [thinking] {}{}", short.replace('\n', " "), if text.chars().count() > 300 { "…" } else { "" });
                 }
                 Some(AgentEvent::AssistantMessage { text, .. }) => {
                     if !streaming_line {
@@ -189,6 +244,20 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         let _ = c.kill();
     }
     Ok(())
+}
+
+/// The `models` answer to a `list_models` request. Anything else that arrives meanwhile (a late
+/// pong, a phase frame) is not what was asked for and is skipped.
+fn wait_for_models(client: &AgentClient) -> Option<AgentEvent> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while std::time::Instant::now() < deadline {
+        match client.recv_timeout(Duration::from_millis(200)) {
+            Some(ev @ AgentEvent::Models { .. }) => return Some(ev),
+            Some(AgentEvent::Disconnected { .. }) => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Prints a proposed plan as the steps it will take, so approving is answering a list of changes

@@ -17,6 +17,42 @@ use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
 
 pub const DEFAULT_PORT: u16 = 7878;
+/// Where Ollama listens unless told otherwise.
+pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// Where a turn's model runs, and which model. `provider` is "claude" (the user's Claude Code login)
+/// or "ollama" (a server, local or on the LAN, speaking the Anthropic API); `base_url` and the model
+/// only matter for Ollama, where there is no default model to fall back on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Backend {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub base_url: String,
+    /// None = the sidecar's default ("default" in the picker).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Ollama only: let a thinking model think first. None = the sidecar's default (off).
+    #[serde(default)]
+    pub think: Option<bool>,
+}
+
+impl Backend {
+    pub fn claude(model: Option<&str>) -> Backend {
+        Backend { provider: "claude".into(), base_url: String::new(), model: model.map(str::to_owned), think: None }
+    }
+    pub fn is_ollama(&self) -> bool {
+        self.provider == "ollama"
+    }
+    /// The conversation slot a turn resumes: one per mode, and Ollama's apart from Claude's — a
+    /// transcript written with one is not continued under the other (see the sidecar).
+    pub fn session_key(provider: Option<&str>, mode: &str) -> String {
+        match provider {
+            Some("ollama") => format!("ollama:{mode}"),
+            _ => mode.to_string(),
+        }
+    }
+}
 
 /// One thing the producer intends to do. `targets` is what it will write, as `layer@section`,
 /// so approving a plan is approving a list of changes rather than a paragraph of prose.
@@ -83,9 +119,24 @@ pub struct TodoItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    Ready { backend: String, #[serde(default)] version: String, #[serde(default)] modes: Vec<String> },
+    Ready {
+        backend: String,
+        #[serde(default)]
+        version: String,
+        #[serde(default)]
+        modes: Vec<String>,
+        /// What the sidecar can route to ("claude", "ollama"). Empty from a pre-1.3 sidecar.
+        #[serde(default)]
+        providers: Vec<String>,
+        /// The Ollama server the sidecar was started with.
+        #[serde(default)]
+        ollama_url: Option<String>,
+    },
     AssistantDelta { text: String, #[serde(default)] agent: Option<String> },
     AssistantMessage { text: String, #[serde(default)] agent: Option<String> },
+    /// The model's reasoning: streamed, then the whole block once it is done.
+    ThinkingDelta { text: String, #[serde(default)] agent: Option<String> },
+    Thinking { text: String, #[serde(default)] agent: Option<String> },
     ToolCall {
         name: String,
         #[serde(default)]
@@ -107,7 +158,29 @@ pub enum AgentEvent {
         ok: Option<bool>,
     },
     Rpc { id: u64, method: String, #[serde(default)] params: Value },
-    Done { #[serde(default)] session_id: String, #[serde(default)] cost_usd: Option<f64>, #[serde(default)] turns: u32, #[serde(default)] mode: Option<String> },
+    Done {
+        #[serde(default)]
+        session_id: String,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+        #[serde(default)]
+        turns: u32,
+        #[serde(default)]
+        mode: Option<String>,
+        #[serde(default)]
+        provider: Option<String>,
+    },
+    /// The models an Ollama server offers, or why it could not be asked.
+    Models {
+        #[serde(default)]
+        provider: String,
+        #[serde(default)]
+        base_url: String,
+        #[serde(default)]
+        models: Vec<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
     Error { message: String, #[serde(default)] code: Option<String>, #[serde(default)] agent: Option<String> },
     Pong,
     /// The producer wants approval before it writes anything.
@@ -184,8 +257,26 @@ impl AgentClient {
     /// `mode` picks the persona and tool set on the sidecar: "composer" answers directly,
     /// "producer" plans first and waits for approval.
     pub fn send_user_message_in(&self, text: &str, context: &str, model: Option<&str>, mode: &str) {
-        let sid = self.sessions.lock().ok().and_then(|s| s.get(mode).cloned());
-        let msg = json!({ "type": "user_message", "text": text, "context": context, "session_id": sid, "model": model, "mode": mode });
+        self.send_turn(text, context, &Backend::claude(model), mode);
+    }
+
+    /// A chat turn on a chosen backend (provider, server, model).
+    pub fn send_turn(&self, text: &str, context: &str, backend: &Backend, mode: &str) {
+        let provider = if backend.is_ollama() { "ollama" } else { "claude" };
+        let key = Backend::session_key(Some(provider), mode);
+        let sid = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned());
+        let base_url = backend.is_ollama().then(|| backend.base_url.clone());
+        let msg = json!({
+            "type": "user_message", "text": text, "context": context, "session_id": sid,
+            "model": backend.model, "mode": mode, "provider": provider, "base_url": base_url,
+            "think": backend.is_ollama().then_some(backend.think).flatten(),
+        });
+        let _ = self.tx.send(Outgoing::Text(msg.to_string()));
+    }
+
+    /// Asks the sidecar for an Ollama server's models; the answer arrives as `AgentEvent::Models`.
+    pub fn list_models(&self, base_url: &str) {
+        let msg = json!({ "type": "list_models", "base_url": base_url });
         let _ = self.tx.send(Outgoing::Text(msg.to_string()));
     }
 
@@ -310,10 +401,11 @@ fn serve(mut socket: WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>, 
                         }
                     }
                     Ok(ev) => {
-                        if let AgentEvent::Done { session_id, mode, .. } = &ev {
+                        if let AgentEvent::Done { session_id, mode, provider, .. } = &ev {
                             if !session_id.is_empty() {
                                 if let Ok(mut g) = sid.lock() {
-                                    g.insert(mode.clone().unwrap_or_else(|| "composer".into()), session_id.clone());
+                                    let key = Backend::session_key(provider.as_deref(), mode.as_deref().unwrap_or("composer"));
+                                    g.insert(key, session_id.clone());
                                 }
                             }
                         }
@@ -450,6 +542,25 @@ mod tests {
             }
             other => panic!("expected a proposed plan, got {other:?}"),
         }
+    }
+
+    /// A turn served by Ollama is remembered apart from Claude's, and a `done` from a sidecar
+    /// that predates providers still lands in the mode's slot.
+    #[test]
+    fn sessions_are_kept_per_provider() {
+        assert_eq!(Backend::session_key(None, "composer"), "composer");
+        assert_eq!(Backend::session_key(Some("claude"), "producer"), "producer");
+        assert_eq!(Backend::session_key(Some("ollama"), "producer"), "ollama:producer");
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"done","session_id":"s1","turns":2,"mode":"composer","provider":"ollama"}"#).unwrap();
+        match ev {
+            AgentEvent::Done { provider, cost_usd, .. } => {
+                assert_eq!(provider.as_deref(), Some("ollama"));
+                assert!(cost_usd.is_none());
+            }
+            other => panic!("expected done, got {other:?}"),
+        }
+        let ev: AgentEvent = serde_json::from_str(r#"{"type":"models","provider":"ollama","base_url":"http://localhost:11434","models":["qwen3:8b"]}"#).unwrap();
+        assert!(matches!(ev, AgentEvent::Models { ref models, .. } if models == &["qwen3:8b".to_string()]));
     }
 
     /// ...and a known frame that gains fields must still load on an older build.

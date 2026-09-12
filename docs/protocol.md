@@ -15,7 +15,8 @@ error (`crates/flvstx-ipc/src/lib.rs`).
 
 | type | fields | meaning |
 |---|---|---|
-| `user_message` | `text`, `context` (compact session summary string), `session_id?`, `model?`, `mode?` | a chat turn from the user |
+| `user_message` | `text`, `context` (compact session summary string), `session_id?`, `model?`, `mode?`, `provider?`, `base_url?`, `think?` | a chat turn from the user |
+| `list_models` | `base_url?` | ask an Ollama server what it can run; answered with `models` |
 | `plan_decision` | `plan_id`, `decision` (`approve` \| `reject` \| `cancel`), `notes?` | answers a proposed plan; **not** a user message, because the producer is parked inside a tool call |
 | `rpc_result` | `id`, `ok`, `result?`, `error?` | answer to an agent `rpc` |
 | `cancel` | | abort the current turn (also settles a pending plan as `cancel`) |
@@ -26,13 +27,38 @@ first and may write nothing until the plan is approved. The two cannot share one
 `agents`, `allowedTools`, `hooks` and `systemPrompt` are fixed when a query is created — so switching
 mode ends the current session and resumes the other one; the sidecar keeps one session id per mode.
 
+`provider` is where the model runs: `claude` (default — the user's Claude Code login) or `ollama`,
+with `base_url` naming the server (`http://localhost:11434`, or another machine). The sidecar keeps
+one conversation per provider *and* mode: a transcript written with Claude is not resumed under a
+local model, nor the other way round. The client keys its saved session ids the same way
+(`Backend::session_key` in `crates/flvstx-ipc`): `composer` / `producer` for Claude,
+`ollama:composer` / `ollama:producer` for Ollama.
+
+### Ollama
+
+The SDK drives the Claude Code CLI, and the CLI talks to whatever `ANTHROPIC_BASE_URL` names. For
+Ollama the sidecar points it at a loopback shim of its own (`agent/src/ollama-shim.ts`) rather than
+at Ollama's Anthropic-compatible endpoint, because that endpoint cannot set the context window —
+it silently truncates the ~10k-token prompt (system prompt plus 32 tool schemas) to the server's
+2048-token default, and the model, never having seen a tool, invents one — and it rejects the
+trailing system-role message the CLI appends. The shim translates each Messages request into a
+native `/api/chat` call (`agent/src/ollama-bridge.ts`: system text merged into one system
+message, `tool_result` → tool-role messages, `tool_use` → `tool_calls`, thinking both ways,
+`options.num_ctx` set) and streams the reply back as Anthropic server-sent events. The context
+window is `FLVSTX_OLLAMA_NUM_CTX` (default 16384), capped at what `/api/show` says the model
+supports; thinking is off unless the turn says `think: true` (the header's checkbox) or the sidecar
+was started with `FLVSTX_OLLAMA_THINK=1`.
+
 ## Agent → Client
 
 | type | fields | meaning |
 |---|---|---|
-| `ready` | `backend` (`sdk` \| `cli`), `version`, `modes?` | sent once after connecting |
+| `ready` | `backend` (`sdk` \| `cli`), `version`, `modes?`, `providers?`, `ollama_url?` | sent once after connecting |
+| `models` | `provider`, `base_url`, `models`, `error?` | an Ollama server's models (`GET /api/tags`), or why it could not be asked |
 | `assistant_delta` | `text`, `agent?` | streamed text fragment |
 | `assistant_message` | `text`, `agent?` | a complete assistant text block |
+| `thinking_delta` | `text`, `agent?` | streamed reasoning (a thinking model on Ollama, or Claude's summaries) |
+| `thinking` | `text`, `agent?` | a complete reasoning block |
 | `tool_call` | `name`, `input`, `tool_use_id?`, `agent?` | the agent is invoking a composer tool (for UI chips) |
 | `tool_result` | `name`, `summary`, `tool_use_id?`, `ok?`, `agent?` | short result text (for UI chips) |
 | `plan_proposed` | `plan_id`, `plan` | the producer wants approval before it writes anything |
@@ -40,7 +66,7 @@ mode ends the current session and resumes the other one; the sidecar keeps one s
 | `phase` | `phase` (`idle` \| `planning` \| `awaiting_approval` \| `executing`) | where a producer turn is; drives the panel's status, which `turn_active` alone cannot express |
 | `todos` | `items` (`content`, `status`) | progress through the approved plan, resent after every write |
 | `rpc` | `id`, `method`, `params` | run a session operation and reply with `rpc_result` |
-| `done` | `session_id`, `cost_usd?`, `turns`, `mode?` | the turn finished |
+| `done` | `session_id`, `cost_usd?`, `turns`, `mode?`, `provider?` | the turn finished; `cost_usd` is absent for Ollama |
 | `error` | `message`, `code?` | the turn failed |
 | `pong` | | |
 

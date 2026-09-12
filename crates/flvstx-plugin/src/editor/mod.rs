@@ -12,7 +12,7 @@ use flvstx_core::ops::dispatch;
 use flvstx_core::theory::{ScaleKind, NOTE_NAMES_SHARP};
 use flvstx_core::{ChordEvent, Clip, ClipSource, Note};
 use flvstx_core::{Key, SectionRole, TrackRole};
-use flvstx_ipc::{AgentClient, AgentEvent, DEFAULT_PORT};
+use flvstx_ipc::{AgentClient, AgentEvent, Backend, DEFAULT_OLLAMA_URL, DEFAULT_PORT};
 use nih_plug::prelude::Editor;
 use nih_plug_egui::create_egui_editor;
 use nih_plug_egui::egui::{self, Color32, RichText};
@@ -60,8 +60,23 @@ pub struct EditorState {
     take_section: String,
     take_idx: usize,
     take_seed: u64,
-    /// Chat model: "default", "sonnet", "opus".
+    /// Chat model when the provider is Claude: "default", "sonnet", "opus".
     pub model: String,
+    /// "claude" (the Claude Code login) or "ollama" (a server, local or remote).
+    pub provider: String,
+    /// The Ollama server, and the edit buffer for it (committed when the field loses focus).
+    pub ollama_url: String,
+    pub ollama_url_draft: String,
+    /// The Ollama model to run; "" until one is picked. Ollama has no default to fall back on.
+    pub ollama_model: String,
+    /// What the server said it can run (`list_models`), and how that went.
+    pub ollama_models: Vec<String>,
+    pub models_status: String,
+    models_requested_at: Option<std::time::Instant>,
+    /// Ollama: let the model think before it answers. Slower, and shown as it goes.
+    pub ollama_think: bool,
+    /// The reasoning streamed so far this turn (main thread only), shown under the live bubble.
+    pub thinking: String,
     /// Where a message goes: the one-shot composer, or the producer that plans first.
     pub mode: String,
     /// Producer phase from the sidecar: idle | planning | awaiting_approval | executing.
@@ -223,13 +238,72 @@ impl EditorState {
             }
             c
         };
-        let model = if self.model == "default" { None } else { Some(self.model.clone()) };
+        let backend = self.backend();
         if let Ok(g) = self.agent.lock() {
             if let Some(a) = g.as_ref() {
-                a.send_user_message_in(text, &ctx, model.as_deref(), &self.mode);
+                a.send_turn(text, &ctx, &backend, &self.mode);
                 self.turn_active = true;
                 self.streaming.clear();
+                self.thinking.clear();
             }
+        }
+    }
+
+    /// What the chat header is set to, as the sidecar wants it.
+    pub fn backend(&self) -> Backend {
+        if self.provider == "ollama" {
+            Backend {
+                provider: "ollama".into(),
+                base_url: self.ollama_url.clone(),
+                model: Some(self.ollama_model.clone()).filter(|m| !m.is_empty()),
+                think: Some(self.ollama_think),
+            }
+        } else {
+            Backend::claude(if self.model == "default" { None } else { Some(&self.model) })
+        }
+    }
+
+    /// Restores a saved backend choice; anything it does not name keeps the current value.
+    fn adopt_backend(&mut self, b: &Backend) {
+        if b.is_ollama() {
+            self.provider = "ollama".into();
+            if !b.base_url.is_empty() {
+                self.ollama_url = b.base_url.clone();
+                self.ollama_url_draft = self.ollama_url.clone();
+            }
+            self.ollama_model = b.model.clone().unwrap_or_default();
+            if let Some(t) = b.think {
+                self.ollama_think = t;
+            }
+        } else if !b.provider.is_empty() {
+            self.provider = "claude".into();
+            self.model = b.model.clone().unwrap_or_else(|| "default".into());
+        }
+    }
+
+    /// Asks the Ollama server what it can run. Starts the sidecar if needed: the plugin has no
+    /// HTTP client of its own, and the sidecar already talks to the server.
+    pub fn refresh_models(&mut self, shared: &Shared) {
+        self.ensure_agent(shared);
+        self.models_status = "asking the server…".into();
+        self.models_requested_at = Some(std::time::Instant::now());
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.list_models(&self.ollama_url);
+            }
+        }
+    }
+
+    /// A model list that never came back, most often because the sidecar was still starting when
+    /// it was asked — so ask again once, rather than leave "asking…" on screen forever.
+    fn nudge_models(&mut self, shared: &Shared) {
+        if self.provider != "ollama" || !self.agent_connected() {
+            return;
+        }
+        let stale = self.models_requested_at.map(|t| t.elapsed().as_secs() >= 10).unwrap_or(false);
+        let never = self.models_requested_at.is_none() && self.ollama_models.is_empty();
+        if never || (stale && self.models_status.starts_with("asking")) {
+            self.refresh_models(shared);
         }
     }
 
@@ -454,7 +528,44 @@ impl EditorState {
                     }
                     shared.push_chat(ChatRole::System, format!("composer disconnected ({reason})"));
                 }
-                AgentEvent::Ready { backend, .. } => self.status = format!("agent ready ({backend})"),
+                AgentEvent::Ready { backend, providers, ollama_url, .. } => {
+                    self.status = format!("agent ready ({backend})");
+                    // A sidecar started with its own server (FLVSTX_OLLAMA_URL) is the better
+                    // default than ours, but never over a URL the user typed or a project saved.
+                    if let Some(url) = ollama_url.filter(|u| !u.is_empty()) {
+                        if self.ollama_url == DEFAULT_OLLAMA_URL {
+                            self.ollama_url = url.clone();
+                            self.ollama_url_draft = url;
+                        }
+                    }
+                    if self.provider == "ollama" && !providers.is_empty() && !providers.iter().any(|p| p == "ollama") {
+                        shared.push_chat(ChatRole::System, "this composer sidecar predates Ollama support; rebuild agent/ (npm run build)");
+                    }
+                    if self.provider == "ollama" {
+                        self.refresh_models(shared);
+                    }
+                }
+                AgentEvent::Models { base_url, models, error, .. } => {
+                    self.models_requested_at = None;
+                    if base_url != self.ollama_url && !base_url.is_empty() {
+                        // The sidecar normalised what we sent (scheme, trailing slash); show that.
+                        self.ollama_url = base_url.clone();
+                        self.ollama_url_draft = base_url;
+                    }
+                    match error {
+                        Some(e) => {
+                            self.ollama_models.clear();
+                            self.models_status = e;
+                        }
+                        None => {
+                            self.models_status = if models.is_empty() { "no models pulled on that server (ollama pull …)".into() } else { String::new() };
+                            if !models.contains(&self.ollama_model) {
+                                self.ollama_model = models.first().cloned().unwrap_or_default();
+                            }
+                            self.ollama_models = models;
+                        }
+                    }
+                }
                 AgentEvent::AssistantDelta { text, agent, .. } => {
                     // Only the main thread streams into the live bubble; a forwarded specialist
                     // would otherwise interleave character by character into the producer's prose.
@@ -468,6 +579,17 @@ impl EditorState {
                     }
                     shared.push_chat_from(ChatRole::Assistant, text, agent);
                 }
+                AgentEvent::ThinkingDelta { text, agent } => {
+                    if agent.is_none() {
+                        self.thinking.push_str(&text);
+                    }
+                }
+                AgentEvent::Thinking { text, agent } => {
+                    if agent.is_none() {
+                        self.thinking.clear();
+                    }
+                    shared.push_chat_from(ChatRole::Thinking, text, agent);
+                }
                 AgentEvent::ToolCall { name, input, agent, .. } => {
                     let short = summarize_input(&name, &input);
                     shared.push_chat_from(ChatRole::Tool, format!("{name} {short}"), agent);
@@ -475,7 +597,7 @@ impl EditorState {
                 AgentEvent::ToolResult { .. } => {}
                 AgentEvent::Rpc { .. } => {}
                 AgentEvent::SessionChanged => {}
-                AgentEvent::Done { session_id, cost_usd, mode, .. } => {
+                AgentEvent::Done { session_id, cost_usd, mode, provider, .. } => {
                     self.turn_active = false;
                     if let Some(c) = cost_usd {
                         self.last_cost = Some(c);
@@ -486,9 +608,10 @@ impl EditorState {
                         t.clear();
                     }
                     self.streaming.clear();
+                    self.thinking.clear();
                     if !session_id.is_empty() {
                         if let Ok(mut s) = shared.agent_sessions.lock() {
-                            s.insert(mode.unwrap_or_else(|| "composer".into()), session_id);
+                            s.insert(Backend::session_key(provider.as_deref(), mode.as_deref().unwrap_or("composer")), session_id);
                         }
                     }
                 }
@@ -538,6 +661,7 @@ impl EditorState {
                 AgentEvent::Unknown => {}
             }
         }
+        self.nudge_models(shared);
     }
 
     /// Keeps the playback buffer and the persisted JSON in sync with the store.
@@ -552,6 +676,9 @@ impl EditorState {
                 if let Ok(p) = serde_json::from_str::<Persisted>(&json) {
                     if let Some(sc) = p.ui_scale {
                         self.ui_scale = sc;
+                    }
+                    if let Some(b) = &p.backend {
+                        self.adopt_backend(b);
                     }
                     shared.load_persisted(p);
                 }
@@ -576,6 +703,7 @@ impl EditorState {
             self.last_persisted_revision = rev;
             let mut p = shared.to_persisted();
             p.ui_scale = Some(self.ui_scale);
+            p.backend = Some(self.backend());
             if let Ok(s) = serde_json::to_string(&p) {
                 self.last_loaded_hash = crate::hash_str(&s);
                 if let Ok(mut w) = self.params.state_json.write() {
@@ -642,6 +770,15 @@ fn initial_state(params: Arc<FlvstxParams>) -> EditorState {
         take_idx: 0,
         take_seed: 100,
         model: "default".into(),
+        provider: "claude".into(),
+        ollama_url: DEFAULT_OLLAMA_URL.into(),
+        ollama_url_draft: DEFAULT_OLLAMA_URL.into(),
+        ollama_model: String::new(),
+        ollama_models: Vec::new(),
+        models_status: String::new(),
+        models_requested_at: None,
+        ollama_think: false,
+        thinking: String::new(),
         mode: "composer".into(),
         phase: "idle".into(),
         last_cost: None,
@@ -1377,6 +1514,7 @@ fn ask_project(save: bool) {
 fn save_project(shared: &Shared, st: &EditorState, path: &std::path::Path) -> Result<(), String> {
     let mut p = shared.to_persisted();
     p.ui_scale = Some(st.ui_scale);
+    p.backend = Some(st.backend());
     let json = serde_json::to_string_pretty(&p).map_err(|e| e.to_string())?;
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -1393,6 +1531,9 @@ fn open_project(shared: &Shared, st: &mut EditorState, path: &std::path::Path) -
     let p: Persisted = serde_json::from_value(v).map_err(|e| format!("{}: {e}", path.display()))?;
     if let Some(sc) = p.ui_scale {
         st.ui_scale = sc;
+    }
+    if let Some(b) = &p.backend {
+        st.adopt_backend(b);
     }
     shared.load_persisted(p);
     adopt_session(shared, st);

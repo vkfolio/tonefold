@@ -39,6 +39,8 @@ pub enum ChatRole {
     Assistant,
     Tool,
     System,
+    /// The model's reasoning before an answer (a thinking model on Ollama; Claude's summaries).
+    Thinking,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +70,10 @@ pub struct Persisted {
     pub selected_track: Option<String>,
     #[serde(default)]
     pub ui_scale: Option<f32>,
+    /// Which provider, server and model the chat header was set to, so a project reopens on the
+    /// same backend it was written with.
+    #[serde(default)]
+    pub backend: Option<flvstx_ipc::Backend>,
 }
 
 /// Shared between GUI, IPC thread and (read-only, lock-free parts) the audio thread.
@@ -288,6 +294,7 @@ impl Shared {
             selected_section: ui.selected_section,
             selected_track: Some(ui.selected_track.clone()),
             ui_scale: None,
+            backend: None,
         }
     }
 

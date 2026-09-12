@@ -6,6 +6,9 @@
 
 export type Mode = "composer" | "producer";
 
+/** Who answers: Anthropic through the user's Claude login, or an Ollama server (local or remote). */
+export type Provider = "claude" | "ollama";
+
 /** Who does a plan step. "producer" means the producer does it itself. */
 export type StepOwner = "producer" | "harmony-form" | "melody-topline" | "rhythm-section" | "arrangement-mix";
 
@@ -54,20 +57,40 @@ export interface TodoItem {
 export type Phase = "idle" | "planning" | "awaiting_approval" | "executing";
 
 export type ClientMessage =
-  | { type: "user_message"; text: string; context?: string; session_id?: string | null; model?: string | null; mode?: Mode }
+  | {
+      type: "user_message";
+      text: string;
+      context?: string;
+      session_id?: string | null;
+      model?: string | null;
+      mode?: Mode;
+      /** Absent means the sidecar's default (`--provider`, else claude). */
+      provider?: Provider | null;
+      /** Ollama only: the server, e.g. "http://localhost:11434" or "http://studio-pc:11434". */
+      base_url?: string | null;
+      /** Ollama only: let a thinking model think before it answers. Slower; shown in the transcript. */
+      think?: boolean | null;
+    }
+  /** Ask an Ollama server what it can run; answered with a `models` frame. */
+  | { type: "list_models"; base_url?: string | null }
   | { type: "plan_decision"; plan_id: string; decision: PlanDecision; notes?: string }
   | { type: "rpc_result"; id: number; ok: boolean; result?: unknown; error?: string }
   | { type: "cancel" }
   | { type: "ping" };
 
 export type AgentMessage =
-  | { type: "ready"; backend: "sdk" | "cli"; version: string; modes?: string[] }
+  | { type: "ready"; backend: "sdk" | "cli"; version: string; modes?: string[]; providers?: Provider[]; ollama_url?: string }
   | { type: "assistant_delta"; text: string; agent?: string }
   | { type: "assistant_message"; text: string; agent?: string }
+  /** The model's reasoning, streamed, then complete — shown apart from what it says to the user. */
+  | { type: "thinking_delta"; text: string; agent?: string }
+  | { type: "thinking"; text: string; agent?: string }
   | { type: "tool_call"; name: string; input: unknown; tool_use_id?: string; agent?: string }
   | { type: "tool_result"; name: string; summary: string; tool_use_id?: string; agent?: string; ok?: boolean }
   | { type: "rpc"; id: number; method: string; params: unknown }
-  | { type: "done"; session_id: string; cost_usd?: number; turns: number; mode?: string }
+  | { type: "done"; session_id: string; cost_usd?: number; turns: number; mode?: string; provider?: Provider }
+  /** The models an Ollama server offers (`GET /api/tags`), or why it could not be asked. */
+  | { type: "models"; provider: Provider; base_url: string; models: string[]; error?: string }
   | { type: "error"; message: string; code?: string; agent?: string }
   | { type: "pong" }
   | { type: "plan_proposed"; plan_id: string; plan: Plan }

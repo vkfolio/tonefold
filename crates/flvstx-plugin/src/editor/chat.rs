@@ -89,12 +89,54 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
         }
     });
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Model").small().weak());
-        egui::ComboBox::from_id_salt("model").width(90.0 * st.ui_scale).selected_text(&st.model).show_ui(ui, |ui| {
-            for value in ["default", "sonnet", "opus"] {
-                ui.selectable_value(&mut st.model, value.to_string(), value);
+        // Where the model runs. Switching mid-conversation is fine: the sidecar keeps one
+        // conversation per provider, so coming back to Claude picks up where it left off.
+        let ollama = st.provider == "ollama";
+        for (value, label, hint) in [
+            ("claude", "Claude", "Anthropic, through your Claude Code login"),
+            ("ollama", "Ollama", "A local or remote Ollama server — free, private, and only as capable as the model you run"),
+        ] {
+            let selected = st.provider == value;
+            if ui.add_enabled(!st.turn_active, egui::SelectableLabel::new(selected, RichText::new(label).small())).on_hover_text(hint).clicked() && !selected {
+                st.provider = value.into();
+                if value == "ollama" { st.refresh_models(shared); }
             }
-        });
+        }
+        if ollama {
+            let url = ui.add(egui::TextEdit::singleline(&mut st.ollama_url_draft).desired_width(150.0 * st.ui_scale).hint_text("http://localhost:11434"))
+                .on_hover_text("Ollama server: localhost, or another machine on your network (set OLLAMA_HOST=0.0.0.0 there)");
+            let entered = url.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (url.lost_focus() || entered) && st.ollama_url_draft.trim() != st.ollama_url {
+                st.ollama_url = st.ollama_url_draft.trim().to_string();
+                st.ollama_url_draft = st.ollama_url.clone();
+                st.refresh_models(shared);
+            }
+            let shown = if st.ollama_model.is_empty() { "pick a model" } else { st.ollama_model.as_str() };
+            egui::ComboBox::from_id_salt("ollama-model").width(150.0 * st.ui_scale).selected_text(shown).show_ui(ui, |ui| {
+                if st.ollama_models.is_empty() {
+                    ui.label(RichText::new("nothing listed yet").small().color(theme::MUTED));
+                }
+                for m in st.ollama_models.clone() {
+                    ui.selectable_value(&mut st.ollama_model, m.clone(), m);
+                }
+            });
+            if ui.small_button("↻").on_hover_text("Ask the server for its models again").clicked() {
+                st.refresh_models(shared);
+            }
+            ui.add_enabled(!st.turn_active, egui::Checkbox::new(&mut st.ollama_think, RichText::new("Think").small()))
+                .on_hover_text("Let the model reason before it answers. Better on hard requests, much slower on a small GPU; the reasoning shows in the transcript.");
+            if !st.models_status.is_empty() {
+                let warn = !st.models_status.starts_with("asking");
+                ui.label(RichText::new(&st.models_status).small().color(if warn { Color32::from_rgb(240, 170, 120) } else { theme::MUTED }));
+            }
+        } else {
+            ui.label(RichText::new("Model").small().weak());
+            egui::ComboBox::from_id_salt("model").width(90.0 * st.ui_scale).selected_text(&st.model).show_ui(ui, |ui| {
+                for value in ["default", "sonnet", "opus"] {
+                    ui.selectable_value(&mut st.model, value.to_string(), value);
+                }
+            });
+        }
         ui.menu_button("Chat options", |ui| {
             if ui.add_enabled(!st.turn_active, egui::Button::new("Clear transcript")).on_hover_text("Keeps the song and composer session").clicked() {
                 if let Ok(mut c) = shared.chat.lock() { c.clear(); }
@@ -137,7 +179,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             .hint_text(if waiting { "Type what to change, then Revise above..." } else { "Describe a melody, mood, or change..." }))
         }).inner;
         let enter = response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        let ready = !st.turn_active && !st.input.trim().is_empty();
+        // Ollama has no default model, so a turn without one would only come back as an error.
+        let ready = !st.turn_active && !st.input.trim().is_empty() && !(st.provider == "ollama" && st.ollama_model.is_empty());
         let busy_label = if producer { "Working..." } else { "Composing..." };
         let send = !waiting
             && ui.add_enabled(ready, egui::Button::new(RichText::new(if st.turn_active { busy_label } else if producer { "Plan this" } else { "Send request" }).strong().color(theme::CANVAS))
@@ -215,9 +258,26 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                     ChatRole::System => {
                         ui.label(RichText::new(&line.text).small().color(Color32::from_rgb(185, 190, 200)));
                     }
+                    ChatRole::Thinking => {
+                        let by = line.agent.as_deref().map(|a| format!("Thinking · {}", a.replace('-', " "))).unwrap_or_else(|| "Thinking".into());
+                        egui::CollapsingHeader::new(RichText::new(by).small().weak()).show(ui, |ui| {
+                            ui.label(RichText::new(&line.text).small().italics().color(theme::MUTED));
+                        });
+                    }
                 }
             });
             index += 1;
+        }
+        if st.turn_active && !st.thinking.is_empty() {
+            // Live reasoning: the tail of it, so a long deliberation reads as progress, not a wall.
+            ui.add_space(6.0);
+            let tail: String = {
+                let n = st.thinking.chars().count();
+                if n > 700 { format!("…{}", st.thinking.chars().skip(n - 700).collect::<String>()) } else { st.thinking.clone() }
+            };
+            egui::CollapsingHeader::new(RichText::new("Thinking…").small().weak()).default_open(true).show(ui, |ui| {
+                ui.label(RichText::new(tail).small().italics().color(theme::MUTED));
+            });
         }
         if st.turn_active && !st.streaming.is_empty() {
             ui.add_space(6.0);
