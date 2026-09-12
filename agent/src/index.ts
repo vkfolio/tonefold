@@ -10,7 +10,7 @@ import { DEFAULT_NUM_CTX, startShim, type Shim } from "./ollama-shim.js";
 import { checklist, decisionResult, foregroundAgents, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
 import { SPECIALISTS } from "./specialists.js";
 
-const VERSION = "1.3.0";
+const VERSION = "1.3.1";
 const args = process.argv.slice(2);
 const flag = (n: string) => {
   const i = args.indexOf(n);

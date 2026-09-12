@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.1 — 2026-09-12
 
 - The **Think** box works for Claude too: on by default (adaptive), off for faster, cheaper
   simple requests. Each provider remembers its own setting.
