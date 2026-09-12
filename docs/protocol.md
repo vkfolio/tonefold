@@ -47,7 +47,9 @@ message, `tool_result` → tool-role messages, `tool_use` → `tool_calls`, thin
 `options.num_ctx` set) and streams the reply back as Anthropic server-sent events. The context
 window is `FLVSTX_OLLAMA_NUM_CTX` (default 16384), capped at what `/api/show` says the model
 supports; thinking is off unless the turn says `think: true` (the header's checkbox) or the sidecar
-was started with `FLVSTX_OLLAMA_THINK=1`.
+was started with `FLVSTX_OLLAMA_THINK=1`. For Claude, `think: false` disables extended thinking
+(the SDK's `thinking: { type: "disabled" }`); absent or true is the CLI's adaptive default. That
+setting is fixed when a query is created, so changing it restarts the session like a model change.
 
 ## Agent → Client
 

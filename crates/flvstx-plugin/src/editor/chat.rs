@@ -123,8 +123,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             if ui.small_button("↻").on_hover_text("Ask the server for its models again").clicked() {
                 st.refresh_models(shared);
             }
-            ui.add_enabled(!st.turn_active, egui::Checkbox::new(&mut st.ollama_think, RichText::new("Think").small()))
-                .on_hover_text("Let the model reason before it answers. Better on hard requests, much slower on a small GPU; the reasoning shows in the transcript.");
             if !st.models_status.is_empty() {
                 let warn = !st.models_status.starts_with("asking");
                 ui.label(RichText::new(&st.models_status).small().color(if warn { Color32::from_rgb(240, 170, 120) } else { theme::MUTED }));
@@ -137,6 +135,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
                 }
             });
         }
+        // One switch, remembered per provider: Claude thinks by default, a local model does not.
+        let think = if ollama { &mut st.ollama_think } else { &mut st.claude_think };
+        ui.add_enabled(!st.turn_active, egui::Checkbox::new(think, RichText::new("Think").small())).on_hover_text(if ollama {
+            "Let the model reason before it answers. Better on hard requests, much slower on a small GPU; the reasoning shows in the transcript."
+        } else {
+            "Let Claude think before it answers (adaptive: it decides how much). Off is faster and cheaper on simple requests."
+        });
         ui.menu_button("Chat options", |ui| {
             if ui.add_enabled(!st.turn_active, egui::Button::new("Clear transcript")).on_hover_text("Keeps the song and composer session").clicked() {
                 if let Ok(mut c) = shared.chat.lock() { c.clear(); }

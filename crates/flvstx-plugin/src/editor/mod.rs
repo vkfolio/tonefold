@@ -73,7 +73,9 @@ pub struct EditorState {
     pub ollama_models: Vec<String>,
     pub models_status: String,
     models_requested_at: Option<std::time::Instant>,
-    /// Ollama: let the model think before it answers. Slower, and shown as it goes.
+    /// Let the model think before it answers, per provider: Claude does unless told not to; a
+    /// local model is slow enough already, so it does not unless asked.
+    pub claude_think: bool,
     pub ollama_think: bool,
     /// The reasoning streamed so far this turn (main thread only), shown under the live bubble.
     pub thinking: String,
@@ -259,7 +261,7 @@ impl EditorState {
                 think: Some(self.ollama_think),
             }
         } else {
-            Backend::claude(if self.model == "default" { None } else { Some(&self.model) })
+            Backend { think: Some(self.claude_think), ..Backend::claude(if self.model == "default" { None } else { Some(&self.model) }) }
         }
     }
 
@@ -278,6 +280,9 @@ impl EditorState {
         } else if !b.provider.is_empty() {
             self.provider = "claude".into();
             self.model = b.model.clone().unwrap_or_else(|| "default".into());
+            if let Some(t) = b.think {
+                self.claude_think = t;
+            }
         }
     }
 
@@ -777,6 +782,7 @@ fn initial_state(params: Arc<FlvstxParams>) -> EditorState {
         ollama_models: Vec::new(),
         models_status: String::new(),
         models_requested_at: None,
+        claude_think: true,
         ollama_think: false,
         thinking: String::new(),
         mode: "composer".into(),

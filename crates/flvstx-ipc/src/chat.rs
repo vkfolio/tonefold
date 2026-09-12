@@ -25,7 +25,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
     eprintln!("[chat] connected. Type a message, or /session, /export, /undo, /save, /quit.");
     eprintln!("[chat] /producer plans before it writes and asks you to approve; /composer answers straight away.");
     eprintln!("[chat] /ollama [URL] runs on an Ollama server (then /models to list, /model NAME to pick); /claude switches back.");
-    eprintln!("[chat] /think on|off lets an Ollama model think before answering (slower; shown as it goes).");
+    eprintln!("[chat] /think on|off: whether the model thinks before answering (Claude: on, Ollama: off unless asked).");
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     // Which persona the sidecar runs. Switching ends one SDK session and resumes the other.
@@ -33,7 +33,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
     let mut model: Option<String> = None;
     let mut provider = String::from("claude");
     let mut ollama_url = String::from(DEFAULT_OLLAMA_URL);
-    let mut think = false;
+    let mut think: Option<bool> = None;
     loop {
         print!("\n{mode}> ");
         out.flush()?;
@@ -103,8 +103,8 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
             continue;
         }
         if let Some(rest) = line.strip_prefix("/think") {
-            think = matches!(rest.trim(), "on" | "1" | "true" | "yes");
-            println!("think: {}", if think { "on" } else { "off" });
+            think = Some(matches!(rest.trim(), "on" | "1" | "true" | "yes"));
+            println!("think: {}", if think == Some(true) { "on" } else { "off" });
             continue;
         }
         if line == "/models" {
@@ -123,7 +123,7 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
             continue;
         }
         let ctx = context_for(&store.lock().unwrap());
-        let backend = Backend { provider: provider.clone(), base_url: ollama_url.clone(), model: model.clone(), think: Some(think) };
+        let backend = Backend { provider: provider.clone(), base_url: ollama_url.clone(), model: model.clone(), think };
         client.send_turn(line, &ctx, &backend, &mode);
         // Stream events until done.
         let mut streaming_line = false;

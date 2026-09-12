@@ -68,7 +68,10 @@ export type ClientMessage =
       provider?: Provider | null;
       /** Ollama only: the server, e.g. "http://localhost:11434" or "http://studio-pc:11434". */
       base_url?: string | null;
-      /** Ollama only: let a thinking model think before it answers. Slower; shown in the transcript. */
+      /**
+       * Let the model think before it answers; shown in the transcript. Absent means the provider's
+       * default: Claude thinks (adaptively), an Ollama model does not.
+       */
       think?: boolean | null;
     }
   /** Ask an Ollama server what it can run; answered with a `models` frame. */

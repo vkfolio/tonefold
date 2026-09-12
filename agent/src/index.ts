@@ -75,8 +75,12 @@ class Connection implements Rpc {
   private baseUrl = OLLAMA_URL;
   /** The forwarder the CLI is pointed at when the provider is Ollama (see ollama-shim.ts). */
   private shim: Shim | null = null;
-  /** Ollama: whether the model may think. Read by the shim per request, so it can change any turn. */
-  private think = OLLAMA_THINK;
+  /**
+   * Whether the model may think; undefined is the provider's default (Claude: yes, Ollama: no).
+   * For Ollama the shim reads it per request; for Claude it is fixed when the query is created,
+   * so a change restarts the session like a model change does.
+   */
+  private think: boolean | undefined = undefined;
   private mode: Mode = "composer";
   /**
    * One conversation per provider and mode. The modes' tools and personas differ, so they cannot
@@ -168,7 +172,10 @@ class Connection implements Rpc {
         const wantedProvider = m.provider ? asProvider(m.provider) : PROVIDER;
         const wantedUrl = wantedProvider === "ollama" ? normalizeOllamaUrl(m.base_url ?? this.baseUrl) : this.baseUrl;
         const wanted = m.model && m.model !== "default" ? m.model : wantedProvider === "ollama" ? undefined : MODEL;
-        if (typeof m.think === "boolean") this.think = m.think;
+        const wantedThink = typeof m.think === "boolean" ? m.think : undefined;
+        // Claude's thinking config is frozen with the query; Ollama's is read per request.
+        const thinkRestart = wantedProvider === "claude" && wantedThink !== this.think;
+        this.think = wantedThink;
         if (wantedProvider === "ollama" && !wanted) {
           // The CLI's default is a Claude model name, which no Ollama server has.
           return this.send({ type: "error", code: "no_model", message: "pick an Ollama model first (the list comes from the server's /api/tags)" });
@@ -176,7 +183,7 @@ class Connection implements Rpc {
         // The two modes differ in tools, hooks and persona — all frozen when the query is created —
         // so a mode change ends the current session and starts the other one, which resumes its own
         // conversation by id. So does a provider or server change: the environment is frozen too.
-        if (wantedMode !== this.mode || wanted !== this.model || wantedProvider !== this.provider || wantedUrl !== this.baseUrl) {
+        if (wantedMode !== this.mode || wanted !== this.model || wantedProvider !== this.provider || wantedUrl !== this.baseUrl || thinkRestart) {
           this.mode = wantedMode;
           this.provider = wantedProvider;
           this.baseUrl = wantedUrl;
@@ -235,7 +242,7 @@ class Connection implements Rpc {
       this.shim.close();
       this.shim = null;
     }
-    if (!this.shim) this.shim = await startShim(target, log, OLLAMA_NUM_CTX, () => this.think);
+    if (!this.shim) this.shim = await startShim(target, log, OLLAMA_NUM_CTX, () => this.think ?? OLLAMA_THINK);
     return this.shim.url;
   }
 
@@ -301,6 +308,8 @@ class Connection implements Rpc {
         model: this.model,
         // Ollama: the CLI is pointed at the server instead of Anthropic. Undefined inherits.
         env: providerEnv(this.provider, cliBase),
+        // Claude thinks adaptively unless the panel turned it off; Ollama's switch is in the shim.
+        thinking: this.provider === "claude" && this.think === false ? { type: "disabled" } : undefined,
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
         mcpServers: { flvstx: server },

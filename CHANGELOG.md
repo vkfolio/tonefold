@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The **Think** box works for Claude too: on by default (adaptive), off for faster, cheaper
+  simple requests. Each provider remembers its own setting.
+
 ## 1.3.0 — 2026-09-12
 
 Compose on an Ollama model — the one on this PC or one across the room — instead of Claude.

@@ -39,8 +39,10 @@ The chat header has a **Claude / Ollama** switch. On Ollama, type the server's U
 started with `OLLAMA_HOST=0.0.0.0`), pick a model from the list the server reports, and chat as
 usual. **↻** asks the server again after you `ollama pull` something. **Think** lets a thinking
 model reason before it answers: better on hard requests, much slower on a small GPU, and the
-reasoning shows in the transcript as it goes (collapsed once the answer arrives). The choices are
-saved with the project. The terminal chat has the same: `/ollama [URL]`, `/models`, `/model NAME`,
+reasoning shows in the transcript as it goes (collapsed once the answer arrives). The same box is
+there for Claude, on by default (adaptive: Claude decides how much); off is faster and cheaper on
+simple requests. Each provider remembers its own setting, and the choices are saved with the
+project. The terminal chat has the same: `/ollama [URL]`, `/models`, `/model NAME`,
 `/think on|off`, `/claude`.
 
 What to expect:

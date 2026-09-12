@@ -32,7 +32,7 @@ pub struct Backend {
     /// None = the sidecar's default ("default" in the picker).
     #[serde(default)]
     pub model: Option<String>,
-    /// Ollama only: let a thinking model think first. None = the sidecar's default (off).
+    /// Let the model think first. None = the provider's default (Claude: yes, Ollama: no).
     #[serde(default)]
     pub think: Option<bool>,
 }
@@ -269,7 +269,7 @@ impl AgentClient {
         let msg = json!({
             "type": "user_message", "text": text, "context": context, "session_id": sid,
             "model": backend.model, "mode": mode, "provider": provider, "base_url": base_url,
-            "think": backend.is_ollama().then_some(backend.think).flatten(),
+            "think": backend.think,
         });
         let _ = self.tx.send(Outgoing::Text(msg.to_string()));
     }
