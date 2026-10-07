@@ -241,10 +241,9 @@ pub fn export_to_dir(session: &Session, section: Option<&str>, dir: &std::path::
     Ok(written)
 }
 
-/// Default export directory: `%LOCALAPPDATA%\Tonefold\export`.
+/// Default export directory: `export` in the [data folder](crate::data_dir).
 pub fn default_export_dir() -> std::path::PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(|| std::env::temp_dir());
-    base.join("Tonefold").join("export")
+    crate::data_dir().join("export")
 }
 
 #[cfg(test)]

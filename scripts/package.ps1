@@ -56,7 +56,19 @@ try {
     Copy-Item -Force "$root\flscript\Tonefold Import.pyscript" $out
     Copy-Item -Recurse -Force "$root\skill" $out
     Copy-Item -Recurse -Force "$root\docs" $out
-    foreach ($f in @("README.md", "CHANGELOG.md", "LICENSE")) {
+    # Built-in sounds. Its author asks that projects ship their own copy rather than link to his files.
+    $sf = Join-Path $root "target\GeneralUser-GS.sf2"
+    $sfLicense = Join-Path $root "target\GeneralUser-GS-LICENSE.txt"
+    if (-not (Test-Path $sf)) {
+        Write-Host "  fetching the GeneralUser GS soundfont..."
+        Invoke-WebRequest -UseBasicParsing -OutFile $sf -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2"
+        Invoke-WebRequest -UseBasicParsing -OutFile $sfLicense -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/documentation/LICENSE.txt"
+    }
+    New-Item -ItemType Directory -Force (Join-Path $out "soundfont") | Out-Null
+    Copy-Item -Force $sf (Join-Path $out "soundfont\GeneralUser-GS.sf2")
+    if (Test-Path $sfLicense) { Copy-Item -Force $sfLicense (Join-Path $out "soundfont\LICENSE.txt") }
+
+    foreach ($f in @("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md")) {
         if (Test-Path "$root\$f") { Copy-Item -Force "$root\$f" $out }
     }
 

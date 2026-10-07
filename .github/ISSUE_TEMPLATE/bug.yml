@@ -20,13 +20,13 @@ body:
     id: where
     attributes:
       label: Where
-      options: [Tonefold app, Plugin (CLAP), Plugin (VST3), CLI]
+      options: [Tonefold app (macOS), Tonefold app (Windows), Plugin (CLAP), Plugin (VST3), CLI]
     validations:
       required: true
   - type: input
     id: env
     attributes:
-      label: Windows version, and DAW + version if using the plugin
+      label: macOS or Windows version, and DAW + version if using the plugin
   - type: dropdown
     id: model
     attributes:
@@ -36,5 +36,5 @@ body:
     id: logs
     attributes:
       label: Logs or exports
-      description: Logs from %LOCALAPPDATA%\Tonefold, or a MIDI/WAV export if it sounds wrong.
+      description: Logs from ~/Library/Application Support/Tonefold or %LOCALAPPDATA%\Tonefold, or a MIDI/WAV export if it sounds wrong.
       render: text

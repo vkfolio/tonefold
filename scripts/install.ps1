@@ -80,12 +80,20 @@ Remove-Item -Recurse -Force '$vst3Dir\FLVSTX.vst3' -ErrorAction SilentlyContinue
 }
 
 # --- built-in sounds ---------------------------------------------------------------------------
-# GeneralUser GS, a free General MIDI soundfont (~31 MB), downloaded once.
+# GeneralUser GS, a free General MIDI soundfont (~31 MB). Release packages carry it; a repo
+# checkout downloads it once.
 $sf = Join-Path $home_ "soundfont\GeneralUser-GS.sf2"
+$sfBundled = Join-Path $root "soundfont\GeneralUser-GS.sf2"
 if (-not (Test-Path $sf)) {
     New-Item -ItemType Directory -Force (Split-Path $sf) | Out-Null
-    Write-Host "Downloading GeneralUser GS soundfont (31 MB)..."
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2" -OutFile $sf -UseBasicParsing
+    if (Test-Path $sfBundled) {
+        Copy-Item -Force $sfBundled $sf
+        $sfLicense = Join-Path $root "soundfont\LICENSE.txt"
+        if (Test-Path $sfLicense) { Copy-Item -Force $sfLicense (Join-Path (Split-Path $sf) "LICENSE.txt") }
+    } else {
+        Write-Host "Downloading GeneralUser GS soundfont (31 MB)..."
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/main/GeneralUser-GS.sf2" -OutFile $sf -UseBasicParsing
+    }
 }
 
 # --- standalone app and command-line tool ------------------------------------------------------

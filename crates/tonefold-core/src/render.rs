@@ -73,12 +73,17 @@ pub fn set_bend_range(synth: &mut rustysynth::Synthesizer, channel: i32, semiton
     synth.process_midi_message(channel, 0xB0, 38, 0);
 }
 
-/// Where the installer puts the General MIDI soundfont (`TONEFOLD_SOUNDFONT` overrides it).
+/// The General MIDI soundfont: `TONEFOLD_SOUNDFONT`, else the installed copy in the data folder,
+/// else the one inside the macOS app bundle.
 pub fn default_soundfont_path() -> std::path::PathBuf {
     if let Some(p) = crate::env_var("SOUNDFONT") {
         return p.into();
     }
-    crate::midi::default_export_dir().parent().map(|p| p.join("soundfont").join("GeneralUser-GS.sf2")).unwrap_or_default()
+    let installed = crate::data_dir().join("soundfont").join("GeneralUser-GS.sf2");
+    match crate::bundle_resources().map(|r| r.join("soundfont").join("GeneralUser-GS.sf2")) {
+        Some(bundled) if !installed.exists() && bundled.exists() => bundled,
+        _ => installed,
+    }
 }
 
 /// Loads a SoundFont from disk.

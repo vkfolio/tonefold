@@ -15,7 +15,8 @@ pub fn run_terminal_chat(session: Session, port: u16, save_path: Option<String>)
         child = Some(spawn_agent(port)?);
     }
     let client = AgentClient::connect(port, store.clone());
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    // The first start may install the composer's dependencies before it listens.
+    let deadline = std::time::Instant::now() + Duration::from_secs(if child.is_some() { 300 } else { 30 });
     while !client.is_connected() {
         if std::time::Instant::now() > deadline {
             anyhow::bail!("agent did not come up on port {port}");

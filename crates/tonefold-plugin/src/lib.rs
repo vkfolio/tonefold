@@ -82,7 +82,7 @@ impl Default for Tonefold {
     fn default() -> Self {
         Self {
             params: Arc::new(TonefoldParams {
-                editor_state: EguiState::from_size(1500, 900),
+                editor_state: EguiState::from_size(1280, 800),
                 output: IntParam::new("MIDI output", 0, IntRange::Linear { min: 0, max: 16 })
                     .with_value_to_string(std::sync::Arc::new(output_label))
                     .with_string_to_value(std::sync::Arc::new(|s: &str| {

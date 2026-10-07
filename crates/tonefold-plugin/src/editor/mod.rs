@@ -202,7 +202,9 @@ impl EditorState {
     fn ensure_agent(&mut self, shared: &Shared) {
         if !tonefold_ipc::port_open(self.port) {
             let recently = self.spawn_attempted_at.map(|t| t.elapsed().as_secs() < 5).unwrap_or(false);
-            if !recently {
+            // A first start may spend a minute installing the composer's dependencies: wait for it.
+            let running = self.child.lock().ok().map(|mut g| g.as_mut().map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false)).unwrap_or(false);
+            if !recently && !running {
                 self.spawn_attempted_at = Some(std::time::Instant::now());
                 match tonefold_ipc::spawn_agent(self.port) {
                     Ok(c) => {
@@ -1633,7 +1635,7 @@ impl raw_window_handle::HasDisplayHandle for ParentWindow {
     }
 }
 
-/// Diagnostics to %LOCALAPPDATA%/Tonefold/keys.log (shared with the keyboard hook).
+/// Diagnostics to keys.log in the data folder (shared with the Windows keyboard hook).
 fn dbg_log(msg: &str) {
     #[cfg(windows)]
     egui_baseview::keyhook::log(msg);

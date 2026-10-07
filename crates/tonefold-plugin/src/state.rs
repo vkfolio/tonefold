@@ -156,12 +156,9 @@ pub fn global_shared() -> Arc<Shared> {
     GLOBAL.get_or_init(|| Shared::new(Session::default())).clone()
 }
 
-/// Default soundfont location: `%LOCALAPPDATA%\Tonefold\soundfont\GeneralUser-GS.sf2` (or `TONEFOLD_SOUNDFONT`).
+/// Soundfont location; see [`tonefold_core::render::default_soundfont_path`].
 pub fn soundfont_path() -> std::path::PathBuf {
-    if let Some(p) = tonefold_core::env_var("SOUNDFONT") {
-        return p.into();
-    }
-    tonefold_core::midi::default_export_dir().parent().map(|p| p.join("soundfont").join("GeneralUser-GS.sf2")).unwrap_or_default()
+    tonefold_core::render::default_soundfont_path()
 }
 
 impl Shared {

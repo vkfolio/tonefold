@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  package:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,15 +25,51 @@ jobs:
       - name: Build and package
         shell: pwsh
         run: ./scripts/package.ps1
-      - name: Publish the release
+      - name: Name the download
         shell: pwsh
+        run: Move-Item (Get-ChildItem dist/Tonefold-*.zip).FullName dist/Tonefold-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Tonefold-Windows.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - name: Build and package
+        run: scripts/package-macos.sh
+      - name: Name the download
+        run: mv dist/Tonefold-*-macOS.dmg dist/Tonefold-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Tonefold-macOS.dmg
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
-          $zip = "dist/Tonefold-$version.zip"
-          if (-not (Test-Path $zip)) { throw "$zip was not produced" }
-          $notes = (Get-Content CHANGELOG.md -Raw) -split "(?m)^## " | Where-Object { $_ -like "$version*" } | Select-Object -First 1
-          $notes = ($notes -split "`n", 2)[1]
-          Set-Content release-notes.md $notes
-          gh release create "${{ github.ref_name }}" $zip --title "Tonefold $version" --notes-file release-notes.md
+          version="${GITHUB_REF_NAME#v}"
+          # This version's section of the changelog, without its heading.
+          awk -v v="$version" '/^## /{p = index($0, "## " v " ") == 1; next} p' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" assets/Tonefold-macOS.dmg assets/Tonefold-Windows.zip \
+            --title "Tonefold $version" --notes-file notes.md

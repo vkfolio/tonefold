@@ -1168,6 +1168,7 @@ dependencies = [
  "egui_glow",
  "keyboard-types",
  "log",
+ "objc",
  "open",
  "pollster",
  "raw-window-handle 0.5.2",
@@ -1393,60 +1394,6 @@ name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
-
-[[package]]
-name = "tonefold-cli"
-version = "1.4.0"
-dependencies = [
- "anyhow",
- "tonefold-core",
- "tonefold-ipc",
- "serde_json",
-]
-
-[[package]]
-name = "tonefold-core"
-version = "1.4.0"
-dependencies = [
- "midly",
- "rand 0.9.5",
- "rand_chacha",
- "rustysynth",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "tonefold-ipc"
-version = "1.4.0"
-dependencies = [
- "anyhow",
- "tonefold-core",
- "serde",
- "serde_json",
- "tungstenite",
-]
-
-[[package]]
-name = "tonefold-plugin"
-version = "1.4.0"
-dependencies = [
- "arc-swap",
- "egui-baseview",
- "egui_commonmark",
- "tonefold-core",
- "tonefold-ipc",
- "nih_plug",
- "nih_plug_egui",
- "raw-window-handle 0.6.2",
- "rfd",
- "rustysynth",
- "serde",
- "serde_json",
- "windows 0.62.2",
- "windows-core 0.62.2",
-]
 
 [[package]]
 name = "foldhash"
@@ -3900,6 +3847,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow 1.0.4",
+]
+
+[[package]]
+name = "tonefold-cli"
+version = "1.4.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tonefold-core",
+ "tonefold-ipc",
+]
+
+[[package]]
+name = "tonefold-core"
+version = "1.4.0"
+dependencies = [
+ "midly",
+ "rand 0.9.5",
+ "rand_chacha",
+ "rustysynth",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tonefold-ipc"
+version = "1.4.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tonefold-core",
+ "tungstenite",
+]
+
+[[package]]
+name = "tonefold-plugin"
+version = "1.4.0"
+dependencies = [
+ "arc-swap",
+ "egui-baseview",
+ "egui_commonmark",
+ "nih_plug",
+ "nih_plug_egui",
+ "raw-window-handle 0.6.2",
+ "rfd",
+ "rustysynth",
+ "serde",
+ "serde_json",
+ "tonefold-core",
+ "tonefold-ipc",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

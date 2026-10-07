@@ -45,6 +45,19 @@ jobs:
           path: target/ui-preview.png
           if-no-files-found: ignore
 
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Build the app
+        run: cargo build --release -p tonefold-plugin --features standalone --bin tonefold-standalone
+      - name: Bundle the CLAP and VST3
+        run: cargo xtask bundle tonefold-plugin --release
+
   agent:
     runs-on: ubuntu-latest
     defaults:

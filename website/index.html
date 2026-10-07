@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Tonefold</title>
-<meta name="description" content="Tonefold is an open-source AI music composer app. Describe a song to Claude and get chords, melody, bass and drums in a piano roll you can edit, play and export. Optional CLAP/VST3 plugin for your DAW.">
+<meta name="description" content="Tonefold is an open-source AI music composer app for macOS and Windows. Describe a song to Claude and get chords, melody, bass and drums in a piano roll you can edit, play and export. Optional CLAP/VST3 plugin for your DAW.">
 <meta property="og:title" content="Tonefold — an AI composer you can edit">
 <meta property="og:description" content="Describe a song. Get every part in a piano roll you can edit, hear and export. Free and open source.">
 <meta property="og:type" content="website">
@@ -246,6 +246,11 @@ figure { margin: 0; }
   background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: 500 .75rem var(--font-body);
 }
 .copy:hover { color: var(--fg); }
+.platform { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 18px; align-content: start; min-width: 0; }
+.platform h3 { font: 700 1.15rem var(--font-display); letter-spacing: -.01em; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.platform h3 .mono { font: 400 .78rem var(--font-mono); color: var(--muted); letter-spacing: 0; }
+.steps h4 { font: 600 1.02rem var(--font-body); margin: 0 0 4px; }
+.install-note { color: var(--muted); font-size: .95rem; margin-top: 28px; max-width: 48em; }
 .aside { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .aside h3 { font: 700 1.1rem var(--font-display); letter-spacing: -.01em; }
 .aside p { color: var(--muted); font-size: .97rem; }
@@ -285,21 +290,21 @@ footer a:hover { color: var(--fg); }
       <li><a href="#install">Install</a></li>
       <li><a href="https://github.com/vkfolio/tonefold">GitHub</a></li>
     </ul>
-    <a class="btn btn-primary btn-sm" href="https://github.com/vkfolio/tonefold/releases/latest">Download</a>
+    <a class="btn btn-primary btn-sm" href="#install">Download</a>
   </div>
 </nav>
 
 <header class="hero" id="top">
   <div class="wrap">
     <div class="hero-copy">
-      <span class="eyebrow">AI music composer · Windows · open source</span>
+      <span class="eyebrow">AI music composer · macOS · Windows · open source</span>
       <h1>Describe a song. Get <em>every part</em>, ready to edit.</h1>
       <p class="lede">Tonefold is a composer app. Tell Claude what you want and it writes chords, melody, bass and drums into a piano roll you can change note by note, hear straight away, and export as MIDI or audio. You don't need a DAW, but there's an optional plugin if you use one.</p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/vkfolio/tonefold/releases/latest">Download for Windows</a>
-        <a class="btn btn-ghost" href="https://github.com/vkfolio/tonefold">View on GitHub</a>
+        <a class="btn btn-primary" id="dl-primary" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Download for macOS</a>
+        <a class="btn btn-ghost" id="dl-secondary" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Download for Windows</a>
       </div>
-      <div class="meta"><span>v1.4.0</span><span>GPL-3.0</span><span>Claude or a local Ollama model</span></div>
+      <div class="meta"><span>v1.4.0</span><span>Apple Silicon + Intel</span><span>GPL-3.0</span><span><a href="https://github.com/vkfolio/tonefold">Source on GitHub</a></span></div>
     </div>
 
     <div class="sketch" aria-label="Example: a four-bar sketch written by Tonefold">
@@ -330,6 +335,11 @@ footer a:hover { color: var(--fg); }
       <p>Each part follows what's already there, section by section, with the whole song in view. Everything it writes stays editable.</p>
     </div>
 
+
+    <figure class="shot" style="margin-bottom: 56px">
+      <img src="assets/editor.png" width="1600" height="929" alt="The Tonefold editor: song sections across the top, the composer chat on the left, a piano roll of chords in the middle and the layer list on the right." loading="lazy">
+      <figcaption>A song in progress: sections across the top, the composer on the left, the chords in the piano roll, every layer on the right.</figcaption>
+    </figure>
 
     <div class="features">
       <div class="feature">
@@ -467,46 +477,33 @@ footer a:hover { color: var(--fg); }
 </section>
 
 <section class="rule" id="install">
-  <div class="wrap install">
-    <div>
-      <div class="section-head" style="margin-bottom: 28px">
-        <span class="eyebrow">Install</span>
-        <h2>Three steps, no admin prompt</h2>
-      </div>
-      <ol class="steps">
-        <li>
-          <div style="min-width:0">
-            <h3>Download the release</h3>
-            <p>Get the latest zip from <a href="https://github.com/vkfolio/tonefold/releases/latest">GitHub Releases</a> and unzip it anywhere.</p>
-          </div>
-        </li>
-        <li>
-          <div style="min-width:0">
-            <h3>Run the installer</h3>
-            <p>It installs the app under your user profile and downloads the built-in sounds once (31 MB).</p>
-            <div class="code"><pre><code id="cmd-install">powershell -ExecutionPolicy Bypass -File scripts\install.ps1</code></pre><button class="copy" type="button" data-copy="cmd-install">Copy</button></div>
-          </div>
-        </li>
-        <li>
-          <div style="min-width:0">
-            <h3>Open Tonefold</h3>
-            <p>Start it from the Start Menu. For the chat composer, install <a href="https://nodejs.org/">Node.js 20+</a> and sign in to Claude Code, or point it at an Ollama server.</p>
-          </div>
-        </li>
-      </ol>
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Install</span>
+      <h2>Download, open, compose</h2>
+      <p>The app is all you need. Plugins for your DAW are an optional extra on both systems.</p>
     </div>
-
-    <aside class="aside">
-      <h3>Want it inside your DAW?</h3>
-      <p>Add the CLAP and VST3 plugins. This step asks for one administrator prompt, because plugins go in the system folders DAWs scan.</p>
-      <div class="code"><pre><code id="cmd-plugins">powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins</code></pre><button class="copy" type="button" data-copy="cmd-plugins">Copy</button></div>
-      <ul>
-        <li>Rescan plugins in your DAW and look for Tonefold.</li>
-        <li>FL Studio is the tested host; prefer the CLAP build there.</li>
-        <li>Other CLAP/VST3 hosts should work. <a href="https://github.com/vkfolio/tonefold/issues">Tell us</a> how it goes.</li>
-      </ul>
-      <p>Prefer to build it yourself? See <a href="https://github.com/vkfolio/tonefold#building-from-source">building from source</a>.</p>
-    </aside>
+    <div class="install">
+      <div class="platform">
+        <h3>macOS <span class="mono">11+ · Apple Silicon and Intel</span></h3>
+        <ol class="steps">
+          <li><div style="min-width:0"><h4>Download the disk image</h4><p><a href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Tonefold-macOS.dmg</a>, then drag Tonefold into Applications.</p></div></li>
+          <li><div style="min-width:0"><h4>Open it the first time</h4><p>This build isn't notarized by Apple yet. On macOS 15 and later, open System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. On earlier versions, right-click the app and choose Open.</p></div></li>
+          <li><div style="min-width:0"><h4>Optional: DAW plugins</h4><p>Copy Tonefold.clap and Tonefold.vst3 from the disk image's DAW plugins folder into <code>~/Library/Audio/Plug-Ins</code>.</p></div></li>
+        </ol>
+      </div>
+      <div class="platform">
+        <h3>Windows <span class="mono">10 and 11</span></h3>
+        <ol class="steps">
+          <li><div style="min-width:0"><h4>Download and unzip</h4><p><a href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Tonefold-Windows.zip</a>, unzipped anywhere.</p></div></li>
+          <li><div style="min-width:0"><h4>Run the installer</h4><p>No administrator prompt. Then start Tonefold from the Start Menu.</p>
+            <div class="code"><pre><code id="cmd-install">powershell -ExecutionPolicy Bypass -File scripts\install.ps1</code></pre><button class="copy" type="button" data-copy="cmd-install">Copy</button></div></div></li>
+          <li><div style="min-width:0"><h4>Optional: DAW plugins</h4><p>Add <code>-Plugins</code> to install the CLAP and VST3 (one administrator prompt).</p>
+            <div class="code"><pre><code id="cmd-plugins">powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins</code></pre><button class="copy" type="button" data-copy="cmd-plugins">Copy</button></div></div></li>
+        </ol>
+      </div>
+    </div>
+    <p class="install-note">For the chat composer, install <a href="https://nodejs.org/">Node.js 20+</a> and sign in to Claude Code, or point Tonefold at an Ollama server. FL Studio is the tested DAW; other CLAP/VST3 hosts should work, and <a href="https://github.com/vkfolio/tonefold/issues">reports are welcome</a>. Prefer to build it yourself? See <a href="https://github.com/vkfolio/tonefold#building-from-source">building from source</a>.</p>
   </div>
 </section>
 
@@ -538,8 +535,8 @@ footer a:hover { color: var(--fg); }
         <p>Yes. Everything except the chat composer runs offline, and the composer can use an Ollama model on your own PC or another machine on your network.</p>
       </details>
       <details>
-        <summary>Is there a Mac version?</summary>
-        <p>Not yet. Tonefold is Windows-only today. macOS is on the roadmap; the engine already builds there.</p>
+        <summary>Does it run on my Mac?</summary>
+        <p>Yes, on macOS 11 or later, as one download for both Apple Silicon and Intel Macs. The plugins run in Mac DAWs that load CLAP or VST3; an Audio Unit version is on the roadmap.</p>
       </details>
       <details>
         <summary>Who owns what I make?</summary>
@@ -702,6 +699,14 @@ footer a:hover { color: var(--fg); }
     icon.setAttribute("d", "M4 2.5v11l9-5.5z");
   }
   btn.addEventListener("click", () => (playing ? stop() : start()));
+
+  // Lead with the visitor's own system
+  const isWindows = /Windows/i.test(navigator.userAgent);
+  if (isWindows) {
+    const p = document.getElementById("dl-primary"), q = document.getElementById("dl-secondary");
+    [p.textContent, q.textContent] = [q.textContent, p.textContent];
+    [p.href, q.href] = [q.href, p.href];
+  }
 
   // Copy buttons
   document.querySelectorAll(".copy").forEach(b => b.addEventListener("click", () => {

@@ -24,8 +24,10 @@ a piano roll you can edit, plays them through built-in sounds, and exports MIDI,
 per layer. You don't need a DAW. If you use one, an optional CLAP/VST3 plugin puts the same
 composer inside it.
 
-**Platform:** Windows. The app is the main download; the CLAP and VST3 plugins are optional.
-macOS is on the roadmap.
+**Platforms:** macOS 11+ (Apple Silicon and Intel) and Windows 10+. The app is the main download;
+the CLAP and VST3 plugins are optional.
+
+![The Tonefold editor](docs/images/editor.png)
 
 ## What it does
 
@@ -49,33 +51,50 @@ macOS is on the roadmap.
 
 ## Install
 
-Download the release zip, unzip it anywhere, and run:
+Download the latest release for your system:
+
+- **macOS:** [Tonefold-macOS.dmg](https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg)
+- **Windows:** [Tonefold-Windows.zip](https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip)
+
+### macOS
+
+Open the `.dmg` and drag **Tonefold** into Applications. This build is not notarized by Apple
+yet, so the first time you open it macOS says it can't check the app: on macOS 15 and later go to
+**System Settings → Privacy & Security** and click **Open Anyway**; on earlier versions
+right-click the app, choose **Open**, then **Open** again.
+
+Your songs, exports and logs live in `~/Library/Application Support/Tonefold`.
+
+### Windows
+
+Unzip the release anywhere and run:
 
 ```powershell
 scripts\install.ps1
 ```
 
-That installs the app under `%LOCALAPPDATA%\Tonefold` with no administrator prompt and downloads
-the GeneralUser GS soundfont once (~31 MB). Start **Tonefold** from the Start Menu.
+That installs the app under `%LOCALAPPDATA%\Tonefold` with no administrator prompt. Start
+**Tonefold** from the Start Menu.
 
-**Node.js 20+** is optional and only the chat composer needs it — everything else, including
-generation, playback and export, works without it.
+### The chat composer
+
+**Node.js 20+** and either Claude Code signed in on your computer or an Ollama server. Everything
+else, including generation, playback and export, works without them. On macOS the first chat
+message installs the composer's dependencies, which takes about a minute.
 
 ## In your DAW (optional)
 
-To use Tonefold inside a DAW as well, install the plugins:
+The same composer runs as a CLAP or VST3 plugin, follows the host's transport and can send live
+MIDI to your instruments.
 
-```powershell
-scripts\install.ps1 -Plugins
-```
+- **macOS:** copy `Tonefold.clap` and `Tonefold.vst3` from the `DAW plugins` folder in the `.dmg`
+  to `~/Library/Audio/Plug-Ins/CLAP` and `~/Library/Audio/Plug-Ins/VST3`.
+- **Windows:** run `scripts\install.ps1 -Plugins` (one UAC prompt); the plugins go to
+  `C:\Program Files\Common Files\CLAP` and `VST3`.
 
-This asks for one UAC prompt and puts `Tonefold.clap` and `Tonefold.vst3` in
-`C:\Program Files\Common Files`, where DAWs look. Rescan plugins in your DAW. In the plugin, the
-composer follows the host's transport and can send live MIDI to your instruments.
-
-**FL Studio** is the tested host; prefer the CLAP build there (**Options → Manage plugins → Find
-installed plugins**). The installer also adds a piano-roll import script when FL Studio is
-present. Other CLAP/VST3 hosts should work but are not yet tested; reports are welcome.
+Then rescan plugins in your DAW. **FL Studio** is the tested host; prefer the CLAP build there.
+On Windows the installer also adds a piano-roll import script when FL Studio is present. Other
+CLAP/VST3 hosts should work but are not yet tested; reports are welcome.
 
 ## Using it
 
@@ -86,7 +105,8 @@ present. Other CLAP/VST3 hosts should work but are not yet tested; reports are w
 
 ## Building from source
 
-Rust stable and (for the composer) Node 20+:
+Rust stable and (for the composer) Node 20+. On macOS, `scripts/package-macos.sh` builds the
+universal app, the plugins and the `.dmg` in one go. On Windows:
 
 ```powershell
 cargo build --release -p tonefold-plugin --features standalone --bin tonefold-standalone   # the app
@@ -104,7 +124,9 @@ also run on an Ollama model, local or remote — see `docs/usage.md`).
 
 ## Roadmap
 
-- macOS (CLAP, VST3, AU) and testing in other DAWs: Ableton Live, Bitwig, Reaper
+- A notarized macOS build and an Audio Unit version of the plugin
+- Testing in more DAWs: Ableton Live, Bitwig, Logic, Reaper
+- Drag a layer from Tonefold straight into a DAW on macOS (Windows has it today)
 - Audio-to-MIDI so the composer can follow a recorded idea
 - More specialists (orchestration, sound design) and a shared style memory per project
 

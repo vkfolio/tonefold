@@ -449,37 +449,119 @@ pub fn context_for(store: &Store) -> String {
 }
 
 /// Locates the composer sidecar: `TONEFOLD_AGENT_DIR`, else an `agent` folder beside the
-/// executable (a repo checkout), else the installed copy under `%LOCALAPPDATA%/Tonefold/agent`.
+/// executable (a repo checkout), else the installed copy under `agent` in the data folder.
 pub fn agent_dir() -> std::path::PathBuf {
     if let Some(d) = tonefold_core::env_var("AGENT_DIR") {
         return d.into();
     }
     if let Ok(exe) = std::env::current_exe() {
-        for anc in exe.ancestors().take(5) {
+        // An app bundle's own copy is never run in place: it is synced to the data folder first.
+        for anc in exe.ancestors().take(5).take_while(|a| a.extension().is_none_or(|e| e != "app")) {
             let cand = anc.join("agent");
-            if cand.join("package.json").exists() {
+            if cand.join("package.json").exists() && !cand.ancestors().any(|a| a.extension().is_some_and(|e| e == "app")) {
                 return cand;
             }
         }
     }
-    tonefold_core::midi::default_export_dir().parent().map(|p| p.join("agent")).unwrap_or_else(|| std::path::PathBuf::from("agent"))
+    tonefold_core::data_dir().join("agent")
 }
 
-/// Spawns the sidecar (`node dist/index.js --port N`), returning the child process.
+/// The composer shipped inside a macOS app bundle (`Tonefold.app/Contents/Resources/agent`).
+fn bundled_agent() -> Option<std::path::PathBuf> {
+    let dir = tonefold_core::bundle_resources()?.join("agent");
+    dir.join("package.json").exists().then_some(dir)
+}
+
+/// Copies the bundled composer into the data folder when it is missing or from another version,
+/// so its dependencies can be installed beside it (an app bundle must stay unmodified).
+fn sync_bundled_agent(dst: &std::path::Path) -> std::io::Result<()> {
+    let Some(src) = bundled_agent() else { return Ok(()) };
+    let same = |name: &str| std::fs::read(src.join(name)).ok() == std::fs::read(dst.join(name)).ok();
+    if same("package.json") && same("package-lock.json") && dst.join("dist").exists() {
+        return Ok(());
+    }
+    if !same("package-lock.json") {
+        let _ = std::fs::remove_dir_all(dst.join("node_modules"));
+    }
+    std::fs::create_dir_all(dst)?;
+    for item in ["dist", "prompts", "skills", "reference", "package.json", "package-lock.json"] {
+        let (from, to) = (src.join(item), dst.join(item));
+        if to.is_dir() {
+            std::fs::remove_dir_all(&to)?;
+        }
+        if from.is_dir() {
+            copy_dir(&from, &to)?;
+        } else if from.exists() {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// The user's login-shell PATH. Apps opened from the macOS Finder get a bare PATH without
+/// Homebrew or nvm, so `node` and `npm` would not be found.
+#[cfg(target_os = "macos")]
+fn login_path() -> Option<std::ffi::OsString> {
+    static PATH: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let out = std::process::Command::new(shell).args(["-ilc", "printf '__TF__%s__TF__' \"$PATH\""]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let path = text.split("__TF__").nth(1)?.to_string();
+        let mut parts: Vec<String> = path.split(':').filter(|p| !p.is_empty()).map(String::from).collect();
+        for extra in ["/opt/homebrew/bin", "/usr/local/bin"] {
+            if !parts.iter().any(|p| p == extra) {
+                parts.push(extra.into());
+            }
+        }
+        Some(parts.join(":").into())
+    })
+    .clone()
+}
+
+/// Spawns the sidecar (`node dist/index.js --port N`), returning the child process. When the
+/// composer's dependencies are not installed yet (first run of the macOS app), it runs
+/// `npm ci` first, in the same child.
 pub fn spawn_agent(port: u16) -> std::io::Result<std::process::Child> {
     let dir = agent_dir();
+    if dir == tonefold_core::data_dir().join("agent") {
+        sync_bundled_agent(&dir)?;
+    }
     let entry = if dir.join("dist").join("index.js").exists() { dir.join("dist").join("index.js") } else { dir.join("src").join("index.ts") };
-    let mut cmd = if entry.extension().map(|e| e == "ts").unwrap_or(false) {
+    let needs_install = !dir.join("node_modules").exists() && dir.join("package-lock.json").exists();
+    let mut cmd = if cfg!(unix) && needs_install {
+        let mut c = std::process::Command::new("/bin/sh");
+        c.arg("-c").arg("npm ci --omit=dev --no-audit --no-fund && exec node \"$0\" --port \"$1\"").arg(&entry).arg(port.to_string());
+        c
+    } else if entry.extension().map(|e| e == "ts").unwrap_or(false) {
         let mut c = std::process::Command::new("npx");
-        c.arg("tsx").arg(&entry);
+        c.arg("tsx").arg(&entry).arg("--port").arg(port.to_string());
         c
     } else {
         let mut c = std::process::Command::new("node");
-        c.arg(&entry);
+        c.arg(&entry).arg("--port").arg(port.to_string());
         c
     };
-    // GUI hosts (FL Studio) have no console; inherited stdio handles would be invalid, so log to a file.
-    let log_dir = tonefold_core::midi::default_export_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir);
+    #[cfg(target_os = "macos")]
+    if let Some(path) = login_path() {
+        cmd.env("PATH", path);
+    }
+    // GUI hosts (FL Studio, Finder) have no console; inherited stdio handles would be invalid, so log to a file.
+    let log_dir = tonefold_core::data_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     let log = std::fs::OpenOptions::new().create(true).append(true).open(log_dir.join("agent.log")).ok();
     let (out, err) = match log {
@@ -490,7 +572,7 @@ pub fn spawn_agent(port: u16) -> std::io::Result<std::process::Child> {
         Ok(f) => std::process::Stdio::from(f),
         Err(_) => err,
     };
-    cmd.arg("--port").arg(port.to_string()).current_dir(&dir).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
+    cmd.current_dir(&dir).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

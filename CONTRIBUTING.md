@@ -23,8 +23,8 @@ are all welcome.
 
 ## Build and test
 
-You need Rust stable and Node 20+. The app targets Windows; `tonefold-core`, the CLI and the agent
-also build on macOS and Linux.
+You need Rust stable and Node 20+. The app and plugins build on macOS and Windows; `tonefold-core`,
+the CLI and the agent also build on Linux.
 
 ```sh
 cargo test --workspace
@@ -33,7 +33,9 @@ cargo xtask bundle tonefold-plugin --release   # the optional CLAP and VST3
 cd agent && npm ci && npm run build && npm test
 ```
 
-`scripts\install.ps1` installs the app you built; add `-Plugins` to try the CLAP/VST3 in a DAW.
+On macOS, `scripts/package-macos.sh` builds the universal app and the `.dmg` (add the targets first:
+`rustup target add aarch64-apple-darwin x86_64-apple-darwin`). On Windows, `scripts\install.ps1`
+installs the app you built; add `-Plugins` to try the CLAP/VST3 in a DAW.
 
 ## Pull requests
 
@@ -46,4 +48,5 @@ cd agent && npm ci && npm run build && npm test
 ## Reporting bugs
 
 Use the bug template. Include the Tonefold version, whether it was the app or the plugin (and which
-DAW), and the log from `%LOCALAPPDATA%\Tonefold` if there is one.
+DAW), and the log from `~/Library/Application Support/Tonefold` (macOS) or `%LOCALAPPDATA%\Tonefold`
+(Windows) if there is one.

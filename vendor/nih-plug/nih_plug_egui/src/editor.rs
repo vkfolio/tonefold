@@ -108,8 +108,11 @@ where
                 let setter = ParamSetter::new(context.as_ref());
 
                 // Host-initiated resize: just follow it.
+                // Sizes are logical; the queue takes physical pixels (twice as many on a Retina Mac).
+                let ppp = egui_ctx.pixels_per_point();
+                let physical = |(w, h): (u32, u32)| PhySize::new((w as f32 * ppp).round() as u32, (h as f32 * ppp).round() as u32);
                 if let Some(new_size) = egui_state.host_size.swap(None) {
-                    queue.resize(PhySize::new(new_size.0, new_size.1));
+                    queue.resize(physical(new_size));
                     egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
                         new_size.0 as f32,
                         new_size.1 as f32,
@@ -120,7 +123,7 @@ where
                     // Ask the plugin host to resize to self.size()
                     if context.request_resize() {
                         // Resize the content of egui window
-                        queue.resize(PhySize::new(new_size.0, new_size.1));
+                        queue.resize(physical(new_size));
                         egui_ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
                             new_size.0 as f32,
                             new_size.1 as f32,

@@ -5,7 +5,13 @@ inside a DAW. Everything below applies to both unless it says otherwise.
 
 ## Install
 
-From a release package — unzip it and run:
+**macOS:** open `Tonefold-macOS.dmg`, drag Tonefold into Applications, and open it (the first
+time: System Settings → Privacy & Security → Open Anyway). The DAW plugins are in the disk image's
+`DAW plugins` folder; copy them to `~/Library/Audio/Plug-Ins/CLAP` and `~/Library/Audio/Plug-Ins/VST3`.
+Data lives in `~/Library/Application Support/Tonefold`. `scripts/package-macos.sh` builds the
+`.dmg` from a checkout.
+
+**Windows:** from a release package — unzip it and run:
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1

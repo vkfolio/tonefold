@@ -3,7 +3,18 @@
 ## 1.4.0 — 2026-10-07
 
 FLVSTX is now **Tonefold**: a standalone composer app first, with the CLAP/VST3 plugin as an optional
-add-on for DAWs. It is open source under GPL-3.0-or-later.
+add-on for DAWs. It is open source under GPL-3.0-or-later, and it runs on **macOS** as well as Windows.
+
+### macOS
+
+- A universal app for Apple Silicon and Intel Macs (macOS 11+), shipped as a `.dmg` with the
+  optional CLAP and VST3 plugins beside it.
+- Fixed the editor drawing at half size in a corner of the window on Retina displays.
+- The composer finds Node.js from Homebrew or nvm even when Tonefold is opened from the Finder, and
+  installs its own dependencies on the first chat message.
+- Data lives in `~/Library/Application Support/Tonefold`.
+
+### Everywhere
 
 - **The installer installs the app by default, with no administrator prompt.** Add `-Plugins` for the
   CLAP and VST3 (one UAC prompt). The FL Studio piano-roll script is added only when FL Studio is
@@ -18,7 +29,11 @@ add-on for DAWs. It is open source under GPL-3.0-or-later.
   it also removes the old FLVSTX plugin files.
 - Settings are now `TONEFOLD_*` environment variables; the old `FLVSTX_*` names still work.
 - `agent/package-lock.json` is committed, so `npm ci` works from a fresh clone.
-- Contributor docs, issue templates, CI on Windows and a release workflow that builds the zip.
+- Release packages now include the GeneralUser GS soundfont instead of downloading it from its
+  author's repository, as the author asks.
+- The editor opens at 1280×800, which fits a 13-inch laptop screen.
+- Contributor docs, issue templates, CI on macOS and Windows, and a release workflow that builds
+  both downloads.
 
 ## 1.3.1 — 2026-09-12
 

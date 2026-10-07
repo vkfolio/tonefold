@@ -102,6 +102,38 @@ where
     repaint_after: Option<Instant>,
 }
 
+/// The backing scale of the window holding this view (2.0 on a Retina display), else the main
+/// screen's.
+#[cfg(target_os = "macos")]
+fn system_scale_factor(window: &baseview::Window<'_>) -> Option<f64> {
+    use objc::{class, msg_send, sel, sel_impl};
+    use objc::runtime::Object;
+    let raw_window_handle::RawWindowHandle::AppKit(handle) = window.raw_window_handle() else {
+        return None;
+    };
+    // SAFETY: the handle's NSView is alive for the duration of this call; the messages sent are
+    // read-only Cocoa getters that accept nil receivers.
+    unsafe {
+        let view = handle.ns_view as *mut Object;
+        let ns_window: *mut Object = if view.is_null() { std::ptr::null_mut() } else { msg_send![view, window] };
+        let scale: f64 = if !ns_window.is_null() {
+            msg_send![ns_window, backingScaleFactor]
+        } else {
+            let screen: *mut Object = msg_send![class!(NSScreen), mainScreen];
+            if screen.is_null() {
+                return None;
+            }
+            msg_send![screen, backingScaleFactor]
+        };
+        (scale > 0.0).then_some(scale)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_scale_factor(_window: &baseview::Window<'_>) -> Option<f64> {
+    None
+}
+
 impl<State, U> EguiWindow<State, U>
 where
     State: 'static + Send,
@@ -127,10 +159,11 @@ where
         });
         let egui_ctx = egui::Context::default();
 
-        // Assume scale for now until there is an event with a new one.
+        // Use the system's scale where it can be read now; otherwise assume 1.0 until an event
+        // brings the real one. macOS sends no such event to an embedded view, so read it there.
         let pixels_per_point = match open_settings.scale_policy {
             WindowScalePolicy::ScaleFactor(scale) => scale,
-            WindowScalePolicy::SystemScaleFactor => 1.0,
+            WindowScalePolicy::SystemScaleFactor => system_scale_factor(window).unwrap_or(1.0),
         } as f32;
         let points_per_pixel = pixels_per_point.recip();
 
