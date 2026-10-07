@@ -1,4 +1,4 @@
-What makes MIDI sound played rather than programmed, and the knobs FLVSTX gives you. (For the
+What makes MIDI sound played rather than programmed, and the knobs Tonefold gives you. (For the
 musical side — where a style sits against the grid, what a groove *is* — read
 `references/rhythm-groove/groove-and-feel.md`.)
 

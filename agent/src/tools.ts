@@ -337,9 +337,9 @@ export function makeServer(rpc: Rpc, onCall?: ToolReport, producerTools?: Produc
         return r;
       },
     ),
-    tool("export", "Write the current song (or one section) as latest.json + .mid files for FL Studio (the FLVSTX Import piano-roll script reads them). Only when the user asks to export/commit.", { section: z.string().optional() }, wrap(rpc, "export", onCall)),
+    tool("export", "Write the current song (or one section) as latest.json + .mid files for FL Studio (the Tonefold Import piano-roll script reads them). Only when the user asks to export/commit.", { section: z.string().optional() }, wrap(rpc, "export", onCall)),
     ...planTools,
     ...verifyTools,
   ];
-  return createSdkMcpServer({ name: "flvstx", version: "0.1.0", tools });
+  return createSdkMcpServer({ name: "tonefold", version: "0.1.0", tools });
 }

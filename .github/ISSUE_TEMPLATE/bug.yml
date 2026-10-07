@@ -1,0 +1,40 @@
+name: Bug report
+description: Something broke or sounds wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Tonefold version
+      placeholder: "1.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options: [Tonefold app, Plugin (CLAP), Plugin (VST3), CLI]
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Windows version, and DAW + version if using the plugin
+  - type: dropdown
+    id: model
+    attributes:
+      label: Composer
+      options: [Not using the composer, Claude, Ollama]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or exports
+      description: Logs from %LOCALAPPDATA%\Tonefold, or a MIDI/WAV export if it sounds wrong.
+      render: text

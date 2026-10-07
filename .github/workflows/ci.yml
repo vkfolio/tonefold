@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+        continue-on-error: true
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true
+      - name: Build the app
+        run: cargo build --release -p tonefold-plugin --features standalone --bin tonefold-standalone
+      - name: Build the CLI
+        run: cargo build --release -p tonefold-cli
+      - name: Bundle the CLAP and VST3
+        run: cargo xtask bundle tonefold-plugin --release
+      - name: Render an editor screenshot
+        continue-on-error: true
+        run: |
+          cargo test -p tonefold-plugin export_editor_preview -- --ignored
+          pip install pillow numpy
+          python scripts/render_ui_preview.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-preview
+          path: target/ui-preview.png
+          if-no-files-found: ignore
+
+  agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

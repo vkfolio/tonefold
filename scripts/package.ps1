@@ -1,4 +1,4 @@
-# Builds everything and stages a release package: dist\FLVSTX-<version>\ plus a .zip beside it.
+# Builds everything and stages a release package: dist\Tonefold-<version>\ plus a .zip beside it.
 # The package installs on a machine with no Rust and no repo checkout (Node is optional; only the
 # chat composer needs it).
 param([switch]$SkipBuild)
@@ -27,14 +27,14 @@ Push-Location $root
 try {
     $version = ([regex]::Match((Get-Content "$root\Cargo.toml" -Raw), '(?m)^version = "([^"]+)"')).Groups[1].Value
     if (-not $version) { throw "could not read the version from Cargo.toml" }
-    Write-Host "Packaging FLVSTX $version"
+    Write-Host "Packaging Tonefold $version"
 
     if (-not $SkipBuild) {
         Write-Host "  building plugins..."
-        Invoke-Native cargo @("xtask", "bundle", "flvstx-plugin", "--release")
+        Invoke-Native cargo @("xtask", "bundle", "tonefold-plugin", "--release")
         Write-Host "  building the app and CLI..."
-        Invoke-Native cargo @("build", "--release", "-p", "flvstx-plugin", "--features", "standalone", "--bin", "flvstx-standalone")
-        Invoke-Native cargo @("build", "--release", "-p", "flvstx-cli")
+        Invoke-Native cargo @("build", "--release", "-p", "tonefold-plugin", "--features", "standalone", "--bin", "tonefold-standalone")
+        Invoke-Native cargo @("build", "--release", "-p", "tonefold-cli")
         if (Get-Command npm -ErrorAction SilentlyContinue) {
             Write-Host "  building the composer sidecar..."
             Invoke-Native npm.cmd @("run", "build") (Join-Path $root "agent")
@@ -43,17 +43,17 @@ try {
         }
     }
 
-    $out = Join-Path $root "dist\FLVSTX-$version"
+    $out = Join-Path $root "dist\Tonefold-$version"
     if (Test-Path $out) { Remove-Item -Recurse -Force $out }
     New-Item -ItemType Directory -Force $out | Out-Null
     New-Item -ItemType Directory -Force (Join-Path $out "scripts") | Out-Null
 
-    Copy-Item -Recurse -Force "$root\target\bundled\FLVSTX.clap" $out
-    Copy-Item -Recurse -Force "$root\target\bundled\FLVSTX.vst3" $out
-    Copy-Item -Force "$root\target\release\flvstx-standalone.exe" (Join-Path $out "FLVSTX.exe")
-    Copy-Item -Force "$root\target\release\flvstx-cli.exe" $out
+    Copy-Item -Recurse -Force "$root\target\bundled\Tonefold.clap" $out
+    Copy-Item -Recurse -Force "$root\target\bundled\Tonefold.vst3" $out
+    Copy-Item -Force "$root\target\release\tonefold-standalone.exe" (Join-Path $out "Tonefold.exe")
+    Copy-Item -Force "$root\target\release\tonefold-cli.exe" $out
     Copy-Item -Force "$root\scripts\install.ps1" (Join-Path $out "scripts")
-    Copy-Item -Force "$root\flscript\FLVSTX Import.pyscript" $out
+    Copy-Item -Force "$root\flscript\Tonefold Import.pyscript" $out
     Copy-Item -Recurse -Force "$root\skill" $out
     Copy-Item -Recurse -Force "$root\docs" $out
     foreach ($f in @("README.md", "CHANGELOG.md", "LICENSE")) {
@@ -70,7 +70,7 @@ try {
 
     Set-Content -Path (Join-Path $out "VERSION") -Value $version -Encoding utf8
 
-    $zip = Join-Path $root "dist\FLVSTX-$version.zip"
+    $zip = Join-Path $root "dist\Tonefold-$version.zip"
     if (Test-Path $zip) { Remove-Item -Force $zip }
     Compress-Archive -Path "$out\*" -DestinationPath $zip
     $mb = [math]::Round((Get-Item $zip).Length / 1MB, 1)

@@ -1,0 +1,11 @@
+[package]
+name = "tonefold-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tonefold-core = { path = "../tonefold-core", features = ["render"] }
+tonefold-ipc = { path = "../tonefold-ipc" }
+serde_json.workspace = true
+anyhow.workspace = true

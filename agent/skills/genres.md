@@ -1,4 +1,4 @@
-What the FLVSTX engine does with a style word, so you can pick the generator params. Pass the style
+What the Tonefold engine does with a style word, so you can pick the generator params. Pass the style
 to `set_key_tempo`; the substrings below are what it actually matches.
 
 For the *music* — how a genre is written, what its harmony and groove really are, what a producer in

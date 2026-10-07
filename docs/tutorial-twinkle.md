@@ -1,4 +1,8 @@
-# FLVSTX tutorial: a complete "Twinkle Twinkle Little Star" song in FL Studio
+# Tonefold tutorial: a complete "Twinkle Twinkle Little Star" song, finished in FL Studio
+
+> Tonefold is a standalone app first. This tutorial also covers the optional plugin, because it
+> finishes the song in FL Studio. To stay in the app, skip Part 2 and use *Export…* instead of
+> Part 9. Install the plugins with `scripts\install.ps1 -Plugins`.
 
 This walks through everything from zero: installing, opening the plugin in FL Studio, hearing it,
 building the song layer by layer, arranging it into a ~2 minute piece, and getting every part into FL
@@ -19,21 +23,22 @@ chat composer needs those two — everything else works without them).
 
 1. Unzip the release, open a terminal in the unzipped folder, and run:
    ```
-   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+   powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins
    ```
-   Accept the administrator prompt — that is the plugins going into the folders FL Studio scans.
+   Accept the administrator prompt — that is the plugins going into the folders FL Studio scans
+   (without `-Plugins` you get the app alone, with no prompt).
    It prints what it installed: the CLAP and VST3 files, the standalone app, the composer and the
    piano-roll script. First run also downloads the built-in sounds (31 MB).
 
-   Building from source instead? `cargo xtask bundle flvstx-plugin --release`, then
-   `cargo build --release -p flvstx-plugin --features standalone --bin flvstx-standalone`, then
+   Building from source instead? `cargo xtask bundle tonefold-plugin --release`, then
+   `cargo build --release -p tonefold-plugin --features standalone --bin tonefold-standalone`, then
    `cd agent && npm ci && npm run build && cd ..`, then the same install command.
 2. Check Claude is logged in: run `claude` in a terminal once; if it asks you to log in, do it, then exit.
 
 You should now have:
-- `C:\Program Files\Common Files\CLAP\FLVSTX.clap`
-- `C:\Program Files\Common Files\VST3\FLVSTX.vst3`
-- `Documents\Image-Line\FL Studio\Settings\Piano roll scripts\FLVSTX Import.pyscript`
+- `C:\Program Files\Common Files\CLAP\Tonefold.clap`
+- `C:\Program Files\Common Files\VST3\Tonefold.vst3`
+- `Documents\Image-Line\FL Studio\Settings\Piano roll scripts\Tonefold Import.pyscript`
 
 ## Part 2 · Make FL Studio see the plugin (once)
 
@@ -43,18 +48,18 @@ You should now have:
    earlier, remove them (select the path, press the minus icon): FL registers added paths as VST2 and ignores
    CLAP/VST3 files in them.
 3. Tick **Rescan previously verified plugins**, then click **Find installed plugins** (top left). Wait for the scan.
-4. Type **FLVSTX** in the **Find** box at the bottom right. You should see FLVSTX with format **CLAP** (and
+4. Type **Tonefold** in the **Find** box at the bottom right. You should see Tonefold with format **CLAP** (and
    one with **VST3**). Click the star on the **CLAP** row to favourite it so it appears in the Add menu.
    Use CLAP in FL Studio; VST3 MIDI output is unreliable in FL.
 5. Close Manage plugins.
 
 ## Part 3 · Set up a project (every new song)
 
-FLVSTX has its own built-in sounds (a General MIDI bank with pianos, strings, synths, drum kits), so you
+Tonefold has its own built-in sounds (a General MIDI bank with pianos, strings, synths, drum kits), so you
 can compose and listen without routing anything.
 
 1. **File > New**. Set the project tempo to **100**.
-2. **Add > FLVSTX** (the CLAP version). Its window opens: chat on the left, piano roll in the middle,
+2. **Add > Tonefold** (the CLAP version). Its window opens: chat on the left, piano roll in the middle,
    Layers on the right. Press Play later and you hear every layer through this channel.
 3. Each layer has an instrument: select a layer, then use the instrument dropdown in the piano roll's
    toolbar (next to the layer name). Sensible defaults are chosen per layer and style (music box for a
@@ -64,12 +69,12 @@ can compose and listen without routing anything.
    ports still exist if you want to drive a VST instrument live; untick Built-in sound then.)
 6. Text size: the **A** menu at the top right. Resize the window by dragging its edges or the corner.
 
-You can also run FLVSTX without FL Studio: Start Menu > **FLVSTX** opens the standalone app with the same
+You can also run Tonefold without FL Studio: Start Menu > **Tonefold** opens the standalone app with the same
 built-in sounds; export or drag layers into FL later.
 
 ## Part 4 · Set the key and style
 
-In the FLVSTX top bar:
+In the Tonefold top bar:
 1. Key: **C** and **major**.
 2. BPM: **100** (this is the plugin's own tempo for its Play button; FL's tempo is used when *Sync to host* is on).
 3. Style: type **kids** and press Tab. This picks nursery-rhyme grooves, plain triads and gentle humanization.
@@ -142,7 +147,7 @@ Option B, by hand:
 ## Part 9 · Get every layer into FL Studio
 
 **Way 1, drag and drop (recommended).** Add your real instruments in the Channel Rack (FLEX for melody,
-a piano for chords, a bass, FPC for drums…). In the FLVSTX Layers panel every layer has a small **⇗**
+a piano for chords, a bass, FPC for drums…). In the Tonefold Layers panel every layer has a small **⇗**
 handle. Drag the handle and drop it:
 - onto an instrument's button in the **Channel Rack**: FL creates the notes for that channel, or
 - onto that instrument's open **piano roll**: the notes land there (this replaces what the pattern
@@ -152,16 +157,16 @@ while dragging to write only the selected section.
 
 **Way 2, export + script.** Press **Export… > MIDI · whole song** (bottom bar) and pick a folder. It writes
 `latest.mid` (all layers) and one `.mid` per layer there, and refreshes the same files in
-`%LOCALAPPDATA%\FLVSTX\export\` so the import script always sees the latest take. In the target
-channel's piano roll choose **Tools > Scripts > FLVSTX Import**, pick the layer, press Accept. Or drag
+`%LOCALAPPDATA%\Tonefold\export\` so the import script always sees the latest take. In the target
+channel's piano roll choose **Tools > Scripts > Tonefold Import**, pick the layer, press Accept. Or drag
 a `.mid` from the folder you picked (**Open folder** reopens it) onto a Channel Rack slot.
 
-Once imported, the notes are ordinary FL notes on your instruments; untick **Built-in sound** in FLVSTX
+Once imported, the notes are ordinary FL notes on your instruments; untick **Built-in sound** in Tonefold
 (or mute its channel) so you don't hear both.
 
 ## Part 10 · Save and come back later
 
-- **File > Save** in FL Studio. FLVSTX stores the song, the chat history and the composer's session inside
+- **File > Save** in FL Studio. Tonefold stores the song, the chat history and the composer's session inside
   the project, so when you reopen the project the conversation continues where it left off.
 - The **default / sonnet / opus** picker in the chat header changes which Claude model answers next.
 
@@ -175,16 +180,16 @@ Once imported, the notes are ordinary FL notes on your instruments; untick **Bui
 | Change a section's character | role dropdown + energy slider in the section row |
 | Fill everything | *Generate section* or *Generate song* |
 | Undo anything | *Undo* in the bottom bar |
-| Get notes into FL | *Export… > MIDI* (pick a folder) then piano roll *Tools > Scripts > FLVSTX Import* |
+| Get notes into FL | *Export… > MIDI* (pick a folder) then piano roll *Tools > Scripts > Tonefold Import* |
 | Send someone the song | *Export… > Audio* — a `.wav` mix plus one `.wav` per layer |
-| Hear the song inside FLVSTX | *Play* (loops the section, or the song with *Loop section* off) |
+| Hear the song inside Tonefold | *Play* (loops the section, or the song with *Loop section* off) |
 | Follow FL's transport | tick *Sync to host* |
 
 ## If something is wrong
 
-- **Composer shows "offline"**: press *Connect*. If it stays offline, open a terminal in `D:\FLVSTX\agent`
-  and run `npm run build`, then check `%LOCALAPPDATA%\FLVSTX\agent.log`. Claude Code must be logged in.
-- **No sound on Play**: check the wrapper MIDI *Output port* on FLVSTX equals the *Input port* on the
+- **Composer shows "offline"**: press *Connect*. If it stays offline, open a terminal in `D:\Tonefold\agent`
+  and run `npm run build`, then check `%LOCALAPPDATA%\Tonefold\agent.log`. Claude Code must be logged in.
+- **No sound on Play**: check the wrapper MIDI *Output port* on Tonefold equals the *Input port* on the
   instrument, and that the *MIDI output* parameter is *All* or the right channel.
 - **Script not in Tools > Scripts**: rerun `scripts\install.ps1`, then restart FL Studio.
 - **Notes land in the wrong place**: the import places notes at the piano roll's timeline selection start;

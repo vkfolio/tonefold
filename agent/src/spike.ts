@@ -11,7 +11,7 @@ const setChords = tool(
     return { content: [{ type: "text", text: `ok: 4 bars parsed, all diatonic to C major` }] };
   },
 );
-const server = createSdkMcpServer({ name: "flvstx", version: "0.0.1", tools: [setChords] });
+const server = createSdkMcpServer({ name: "tonefold", version: "0.0.1", tools: [setChords] });
 
 const t0 = Date.now();
 let firstText = 0;
@@ -19,8 +19,8 @@ for await (const msg of query({
   prompt: "Propose a warm, simple 4-bar chord progression for a kids' rhyme in C major and store it with set_chords for section 'Verse'. Then reply in one sentence.",
   options: {
     systemPrompt: "You are a music composer assistant. Use tools to write results.",
-    mcpServers: { flvstx: server },
-    allowedTools: ["mcp__flvstx__set_chords"],
+    mcpServers: { tonefold: server },
+    allowedTools: ["mcp__tonefold__set_chords"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     maxTurns: 4,

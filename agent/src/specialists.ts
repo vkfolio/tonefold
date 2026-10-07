@@ -46,7 +46,7 @@ export const DOMAIN: Record<string, string[]> = {
 
 const READ = ["get_session", "get_notes", "analyze", "read_reference", "list_layer_kinds", "list_scales", "list_instruments"];
 
-const mcp = (names: string[]) => names.map((n) => `mcp__flvstx__${n}`);
+const mcp = (names: string[]) => names.map((n) => `mcp__tonefold__${n}`);
 
 export const SPECIALISTS: Record<string, AgentDefinition> = {
   "harmony-form": {

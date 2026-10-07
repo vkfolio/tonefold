@@ -1395,18 +1395,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d"
 
 [[package]]
-name = "flvstx-cli"
-version = "1.3.1"
+name = "tonefold-cli"
+version = "1.4.0"
 dependencies = [
  "anyhow",
- "flvstx-core",
- "flvstx-ipc",
+ "tonefold-core",
+ "tonefold-ipc",
  "serde_json",
 ]
 
 [[package]]
-name = "flvstx-core"
-version = "1.3.1"
+name = "tonefold-core"
+version = "1.4.0"
 dependencies = [
  "midly",
  "rand 0.9.5",
@@ -1418,25 +1418,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "flvstx-ipc"
-version = "1.3.1"
+name = "tonefold-ipc"
+version = "1.4.0"
 dependencies = [
  "anyhow",
- "flvstx-core",
+ "tonefold-core",
  "serde",
  "serde_json",
  "tungstenite",
 ]
 
 [[package]]
-name = "flvstx-plugin"
-version = "1.3.1"
+name = "tonefold-plugin"
+version = "1.4.0"
 dependencies = [
  "arc-swap",
  "egui-baseview",
  "egui_commonmark",
- "flvstx-core",
- "flvstx-ipc",
+ "tonefold-core",
+ "tonefold-ipc",
  "nih_plug",
  "nih_plug_egui",
  "raw-window-handle 0.6.2",

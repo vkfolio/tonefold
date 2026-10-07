@@ -1,5 +1,5 @@
-// FLVSTX agent sidecar: WebSocket server that runs a Claude Agent SDK session with composer tools.
-// The plugin (or flvstx-cli chat) connects, sends user messages, and answers RPCs (docs/protocol.md).
+// Tonefold agent sidecar: WebSocket server that runs a Claude Agent SDK session with composer tools.
+// The plugin (or tonefold-cli chat) connects, sends user messages, and answers RPCs (docs/protocol.md).
 import { WebSocketServer, WebSocket } from "ws";
 import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { makeServer, TOOL_NAMES } from "./tools.js";
@@ -16,19 +16,21 @@ const flag = (n: string) => {
   const i = args.indexOf(n);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const PORT = Number(flag("--port") ?? process.env.FLVSTX_PORT ?? 7878);
-const MODEL = flag("--model") ?? process.env.FLVSTX_MODEL; // undefined = CLI default
+// TONEFOLD_* settings; the FLVSTX_* names from before the rename still work.
+const env = (name: string) => process.env[`TONEFOLD_${name}`] ?? process.env[`FLVSTX_${name}`];
+const PORT = Number(flag("--port") ?? env("PORT") ?? 7878);
+const MODEL = flag("--model") ?? env("MODEL"); // undefined = CLI default
 // Where the model runs unless a turn says otherwise: "claude" (the user's login) or "ollama".
-const PROVIDER: Provider = asProvider(flag("--provider") ?? process.env.FLVSTX_PROVIDER);
-const OLLAMA_URL = normalizeOllamaUrl(flag("--ollama-url") ?? process.env.FLVSTX_OLLAMA_URL ?? process.env.OLLAMA_HOST ?? DEFAULT_OLLAMA_URL);
+const PROVIDER: Provider = asProvider(flag("--provider") ?? env("PROVIDER"));
+const OLLAMA_URL = normalizeOllamaUrl(flag("--ollama-url") ?? env("OLLAMA_URL") ?? process.env.OLLAMA_HOST ?? DEFAULT_OLLAMA_URL);
 // Context window asked of an Ollama model (capped at what the model supports). The server's
 // default is far too small for the prompt and tool schemas, and it truncates silently.
-const OLLAMA_NUM_CTX = Number(flag("--ollama-ctx") ?? process.env.FLVSTX_OLLAMA_NUM_CTX ?? DEFAULT_NUM_CTX) || DEFAULT_NUM_CTX;
+const OLLAMA_NUM_CTX = Number(flag("--ollama-ctx") ?? env("OLLAMA_NUM_CTX") ?? DEFAULT_NUM_CTX) || DEFAULT_NUM_CTX;
 // Thinking is off for local models unless asked for: it multiplies the time to the first tool call.
-const OLLAMA_THINK = ["1", "true", "on"].includes(String(process.env.FLVSTX_OLLAMA_THINK ?? "").toLowerCase());
+const OLLAMA_THINK = ["1", "true", "on"].includes(String(env("OLLAMA_THINK") ?? "").toLowerCase());
 const MAX_TURNS = Number(flag("--max-turns") ?? 40);
 
-const log = (...a: unknown[]) => console.error(`[flvstx-agent ${new Date().toISOString().slice(11, 19)}]`, ...a);
+const log = (...a: unknown[]) => console.error(`[tonefold-agent ${new Date().toISOString().slice(11, 19)}]`, ...a);
 
 /** Async queue used as the SDK's streaming prompt input. */
 class Inbox implements AsyncIterable<SDKUserMessage> {
@@ -312,9 +314,9 @@ class Connection implements Rpc {
         thinking: this.provider === "claude" && this.think === false ? { type: "disabled" } : undefined,
         maxTurns: MAX_TURNS,
         cwd: AGENT_ROOT,
-        mcpServers: { flvstx: server },
+        mcpServers: { tonefold: server },
         allowedTools: [
-          ...[...TOOL_NAMES, ...(producer ? ["propose_plan", "verify_step"] : [])].map((t) => `mcp__flvstx__${t}`),
+          ...[...TOOL_NAMES, ...(producer ? ["propose_plan", "verify_step"] : [])].map((t) => `mcp__tonefold__${t}`),
           // Both spellings: the delegation tool has been called each at different SDK versions.
           ...(producer ? ["Agent", "Task"] : []),
         ],
@@ -336,7 +338,7 @@ class Connection implements Rpc {
         hooks: producer
           ? {
               PreToolUse: [
-                { matcher: "mcp__flvstx__.*", hooks: [toolFence(this.run, log)], timeout: 10 },
+                { matcher: "mcp__tonefold__.*", hooks: [toolFence(this.run, log)], timeout: 10 },
                 { matcher: "Agent|Task", hooks: [foregroundAgents()], timeout: 10 },
               ],
             }
@@ -361,10 +363,10 @@ class Connection implements Rpc {
           if (any.subtype === "init") {
             log(`init model=${any.model} apiKeySource=${any.apiKeySource} session=${any.session_id}`);
             const all: string[] = any.tools ?? [];
-            const ours = all.filter((t) => t.includes("flvstx"));
+            const ours = all.filter((t) => t.includes("tonefold"));
             // The built-ins matter as much as ours: anything unexpected here is a tool the
             // model can reach for and we did not mean it to have.
-            log(`mcp_servers=${JSON.stringify(any.mcp_servers)} flvstx=${ours.length} builtin=[${all.filter((t) => !t.includes("flvstx")).join(",")}]`);
+            log(`mcp_servers=${JSON.stringify(any.mcp_servers)} tonefold=${ours.length} builtin=[${all.filter((t) => !t.includes("tonefold")).join(",")}]`);
           }
           break;
         case "stream_event": {
@@ -383,7 +385,7 @@ class Connection implements Rpc {
           const agent = authorOf(any);
           for (const b of any.message?.content ?? []) {
             if (b.type === "tool_use") {
-              const name = String(b.name).replace(/^mcp__flvstx__/, "");
+              const name = String(b.name).replace(/^mcp__tonefold__/, "");
               if (name === "ToolSearch") continue;
               // Remember who owns this call so its result can be attributed too.
               if (b.id) this.agentOf.set(b.id, agent);

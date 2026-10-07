@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { estimateTokens, fromOllamaFinal, SseTranslator, toOllamaChat, type ARequest } from "./ollama-bridge.js";
 import { startShim } from "./ollama-shim.js";
 
-const TOOL = { name: "mcp__flvstx__set_key_tempo", description: "Set key and tempo.", input_schema: { type: "object", properties: { key: { type: "string" } }, $schema: "http://json-schema.org/draft-07/schema#" } };
+const TOOL = { name: "mcp__tonefold__set_key_tempo", description: "Set key and tempo.", input_schema: { type: "object", properties: { key: { type: "string" } }, $schema: "http://json-schema.org/draft-07/schema#" } };
 
 test("a CLI request becomes a native chat request with the context window set", () => {
   const req: ARequest = {

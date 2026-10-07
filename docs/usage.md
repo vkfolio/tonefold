@@ -1,4 +1,7 @@
-# FLVSTX — using it in FL Studio
+# Tonefold — reference
+
+Tonefold is a standalone app; the CLAP/VST3 plugin is an optional way to run the same composer
+inside a DAW. Everything below applies to both unless it says otherwise.
 
 ## Install
 
@@ -11,26 +14,30 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 From a checkout, build first, then run the same command:
 
 ```
-cargo xtask bundle flvstx-plugin --release
-cargo build --release -p flvstx-plugin --features standalone --bin flvstx-standalone
-cargo build --release -p flvstx-cli
+cargo xtask bundle tonefold-plugin --release
+cargo build --release -p tonefold-plugin --features standalone --bin tonefold-standalone
+cargo build --release -p tonefold-cli
 cd agent && npm ci && npm run build && cd ..
 ```
 
 `scripts\package.ps1` does all of that and stages a release zip under `dist\`.
 
-`install.ps1` copies `FLVSTX.clap` to `C:\Program Files\Common Files\CLAP`, `FLVSTX.vst3` to
-`C:\Program Files\Common Files\VST3`, and the piano-roll script to
+`install.ps1` installs the app, CLI and composer under `%LOCALAPPDATA%\Tonefold` (Start Menu >
+**Tonefold**), with no administrator prompt.
+
+**Optional DAW plugins:** `install.ps1 -Plugins` also copies `Tonefold.clap` to
+`C:\Program Files\Common Files\CLAP` and `Tonefold.vst3` to `C:\Program Files\Common Files\VST3`
+(one UAC prompt). When FL Studio is installed, the piano-roll script goes to
 `Documents\Image-Line\FL Studio\Settings\Piano roll scripts`. In FL Studio run
 **Options > Manage plugins > Find installed plugins** (the machine-wide Common Files folders are scanned
-by default; do not add custom paths, FL treats added paths as VST2) and favourite FLVSTX. Prefer the **CLAP** build in FL Studio.
+by default; do not add custom paths, FL treats added paths as VST2) and favourite Tonefold. Prefer the **CLAP** build in FL Studio.
 
 The composer sidecar needs Node 22 and your Claude Code login (`claude` must be logged in on this
 PC) — or an Ollama server, see below. The plugin starts `node agent/dist/index.js --port 7878` on
-the first chat message; set `FLVSTX_AGENT_DIR` if the repo is not at `D:\FLVSTX`, `FLVSTX_PORT` to
-change the port, and `FLVSTX_MODEL` to force a model. `FLVSTX_PROVIDER=ollama` and
-`FLVSTX_OLLAMA_URL` make Ollama the sidecar's default; `FLVSTX_OLLAMA_NUM_CTX` (default 16384) is
-the context window it asks a local model for, and `FLVSTX_OLLAMA_THINK=1` makes **Think** the default.
+the first chat message; set `TONEFOLD_AGENT_DIR` if the repo is not at `D:\Tonefold`, `TONEFOLD_PORT` to
+change the port, and `TONEFOLD_MODEL` to force a model. `TONEFOLD_PROVIDER=ollama` and
+`TONEFOLD_OLLAMA_URL` make Ollama the sidecar's default; `TONEFOLD_OLLAMA_NUM_CTX` (default 16384) is
+the context window it asks a local model for, and `TONEFOLD_OLLAMA_THINK=1` makes **Think** the default.
 
 ### Running on Ollama instead of Claude
 
@@ -113,25 +120,25 @@ the Claude / Ollama switch described above.
 
 ## Built-in sounds, drag-out, standalone
 
-FLVSTX renders its own audio with a General MIDI soundfont (GeneralUser GS, downloaded by the installer to
-`%LOCALAPPDATA%\FLVSTX\soundfont`). Each layer has an instrument (piano roll toolbar dropdown; the composer
+Tonefold renders its own audio with a General MIDI soundfont (GeneralUser GS, downloaded by the installer to
+`%LOCALAPPDATA%\Tonefold\soundfont`). Each layer has an instrument (piano roll toolbar dropdown; the composer
 can set it too); the **Built-in sound** toggle and volume are in the bottom bar. Only one plugin instance
 per project renders audio. Layers are dragged into FL Studio with the **⇗** handle in the Layers panel
 (drop on a Channel Rack instrument or an open piano roll; Shift = selected section only). The installer also
-puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
+puts a standalone app in the Start Menu (**Tonefold**), which uses WASAPI audio.
 
 ## Workflow
 
-1. Add FLVSTX as an instrument in the Channel Rack. Open it and type a brief in the chat
+1. Add Tonefold as an instrument in the Channel Rack. Open it and type a brief in the chat
    ("lo-fi loop in F, 8 bars", "kids song about brushing teeth", "epic cinematic intro in D minor").
 2. The composer sets key/tempo/form, chords, then generates the parts and explains what it did.
    Use the quick-action buttons for common iterations, or keep chatting ("make the chorus busier",
    "different melody, keep the chords", "swing it more").
 3. Hear it: **Play** loops the selected section through the plugin's MIDI output; **Sync to host**
-   follows FL's transport instead. Route the output to an instrument: in the FLVSTX wrapper window
+   follows FL's transport instead. Route the output to an instrument: in the Tonefold wrapper window
    set **MIDI > Output port** to e.g. 10, and on the target instrument (FLEX, FPC, …) set
    **MIDI > Input port** to 10. Every layer goes out on its own MIDI channel (shown in the Layers
-   panel); the plugin's **MIDI output** parameter selects one channel per instance, so add one FLVSTX
+   panel); the plugin's **MIDI output** parameter selects one channel per instance, so add one Tonefold
    instance per instrument and pick that layer's channel on each. All instances in the project share one session, so each can send a different layer.
 4. Move the playhead by dragging the bar ruler at the top of the piano roll; **Play** starts from
    there. Click the piano keys down the left edge to hear a note (drag for a glissando); keys the layer
@@ -142,8 +149,8 @@ puts a standalone app in the Start Menu (**FLVSTX**), which uses WASAPI audio.
    edits on its next turn.
 6. Commit to FL: **Export… > MIDI** (whole song or this section) asks for a folder, then writes `latest.json`,
    `latest.mid` (all tracks) and one `.mid` per track into it. The same files are refreshed in
-   `%LOCALAPPDATA%\FLVSTX\export\` too, which is where the import script reads them. Then either
-   - open the target channel's piano roll and run **Tools > Scripts > FLVSTX Import** (choose the
+   `%LOCALAPPDATA%\Tonefold\export\` too, which is where the import script reads them. Then either
+   - open the target channel's piano roll and run **Tools > Scripts > Tonefold Import** (choose the
      track; it merges into the existing notes at the timeline selection), or
    - drag a `.mid` file from the export folder (**Open folder** reopens the last one) onto a Channel Rack slot,
    - or drag a layer's **⇗** handle in the Layers panel straight onto an FL channel or its piano roll.
@@ -177,19 +184,19 @@ on demand through its `read_reference` tool, guided by an index in its prompt, s
 genre comes from a reference rather than from memory. Based on "Music Composition Agent Skill" by
 SJY051, licensed under CC BY 4.0 — see `agent/reference/NOTICE.md`.
 
-**Song…** (top bar) keeps songs as files: **New**, **Open…**, **Save**, **Save as…**. A `.flvstx` file
+**Song…** (top bar) keeps songs as files: **New**, **Open…**, **Save**, **Save as…**. A `.tonefold` file
 holds the whole session — sections, layers, notes, chat and the composer session — so you can come back
 to a song later or keep several going.
 
 Inside FL Studio the session is also saved in the FL project, so a project reload restores it. The
-standalone app instead autosaves to `%LOCALAPPDATA%\FLVSTXutosave.flvstx` as you work and reopens
+standalone app instead autosaves to `%LOCALAPPDATA%\Tonefoldutosave.tonefold` as you work and reopens
 that song on the next launch, so nothing is lost if you close it.
 
 ## Command line
 
 ```
-cargo run -p flvstx-cli -- demo --style lofi --key "F major" --bars 8 --out demo.mid
-cargo run -p flvstx-cli -- chat session.json          # terminal chat through the sidecar
-cargo run -p flvstx-cli -- op session.json generate_all '{"section":"verse"}'
-cargo run -p flvstx-plugin --release --features standalone   # GUI without a DAW
+cargo run -p tonefold-cli -- demo --style lofi --key "F major" --bars 8 --out demo.mid
+cargo run -p tonefold-cli -- chat session.json          # terminal chat through the sidecar
+cargo run -p tonefold-cli -- op session.json generate_all '{"section":"verse"}'
+cargo run -p tonefold-plugin --release --features standalone   # GUI without a DAW
 ```

@@ -1,5 +1,5 @@
 ﻿"""Rasterize tessellated egui output for offline visual QA (Pillow + NumPy).
-Run cargo test -p flvstx-plugin export_editor_preview -- --ignored first.
+Run cargo test -p tonefold-plugin export_editor_preview -- --ignored first.
 """
 import json
 from pathlib import Path

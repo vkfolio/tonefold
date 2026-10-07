@@ -1,15 +1,15 @@
-# FLVSTX plugin ⇄ agent protocol
+# Tonefold plugin ⇄ agent protocol
 
 Transport: WebSocket on `ws://127.0.0.1:<port>` (default port 7878). The **agent sidecar is the server**
 (`node agent/dist/index.js --port 7878`); the plugin or the CLI connects as a client. One client per
 agent process. All frames are JSON text.
 
 The plugin is the source of truth for the session. The agent never keeps notes; it reads and writes
-through RPCs that the client answers by calling `flvstx_core::ops::dispatch`.
+through RPCs that the client answers by calling `tonefold_core::ops::dispatch`.
 
 The two sides ship separately, so the wire is additive: every field is optional with a default, and
 an unknown `type` deserialises to `AgentEvent::Unknown` and is ignored rather than surfaced as an
-error (`crates/flvstx-ipc/src/lib.rs`).
+error (`crates/tonefold-ipc/src/lib.rs`).
 
 ## Client → Agent
 
@@ -31,7 +31,7 @@ mode ends the current session and resumes the other one; the sidecar keeps one s
 with `base_url` naming the server (`http://localhost:11434`, or another machine). The sidecar keeps
 one conversation per provider *and* mode: a transcript written with Claude is not resumed under a
 local model, nor the other way round. The client keys its saved session ids the same way
-(`Backend::session_key` in `crates/flvstx-ipc`): `composer` / `producer` for Claude,
+(`Backend::session_key` in `crates/tonefold-ipc`): `composer` / `producer` for Claude,
 `ollama:composer` / `ollama:producer` for Ollama.
 
 ### Ollama
@@ -45,9 +45,9 @@ trailing system-role message the CLI appends. The shim translates each Messages 
 native `/api/chat` call (`agent/src/ollama-bridge.ts`: system text merged into one system
 message, `tool_result` → tool-role messages, `tool_use` → `tool_calls`, thinking both ways,
 `options.num_ctx` set) and streams the reply back as Anthropic server-sent events. The context
-window is `FLVSTX_OLLAMA_NUM_CTX` (default 16384), capped at what `/api/show` says the model
+window is `TONEFOLD_OLLAMA_NUM_CTX` (default 16384), capped at what `/api/show` says the model
 supports; thinking is off unless the turn says `think: true` (the header's checkbox) or the sidecar
-was started with `FLVSTX_OLLAMA_THINK=1`. For Claude, `think: false` disables extended thinking
+was started with `TONEFOLD_OLLAMA_THINK=1`. For Claude, `think: false` disables extended thinking
 (the SDK's `thinking: { type: "disabled" }`); absent or true is the CLI's adaptive default. That
 setting is fixed when a query is created, so changing it restarts the session like a model change.
 
@@ -92,7 +92,7 @@ turn** — no new user message, no lost context. Three sent-backs and the produc
 outlive its turn (`agent/src/producer.ts`, tested in `agent/src/producer.test.ts`).
 
 The approval is enforced by a `PreToolUse` hook, not by the prompt: until the phase is `executing`,
-every `mcp__flvstx__*` tool outside the read set is denied with a reason the model can act on.
+every `mcp__tonefold__*` tool outside the read set is denied with a reason the model can act on.
 
 ### Specialists
 
@@ -140,7 +140,7 @@ subagents are backgrounded by default, and two agents writing to one session pro
 
 `targets` are the point: approving a plan is approving a list of changes, not a paragraph of prose.
 
-## RPC methods (see `crates/flvstx-core/src/ops.rs`)
+## RPC methods (see `crates/tonefold-core/src/ops.rs`)
 
 `checkpoint`, `revert_to_checkpoint`, `get_session`, `get_notes`, `set_key_tempo`, `set_form`, `set_section`, `copy_section`, `set_chords`,
 `suggest_chords`, `harmonize`, `set_notes`, `generate`, `generate_all`, `generate_song`, `humanize`,

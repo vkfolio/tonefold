@@ -14,7 +14,7 @@ public class W {
 }
 "@
 [W]::SetProcessDPIAware() | Out-Null
-$p = Get-Process flvstx-standalone -ErrorAction Stop | Select-Object -First 1
+$p = Get-Process tonefold-standalone -ErrorAction Stop | Select-Object -First 1
 $h = $p.MainWindowHandle
 [W]::SetForegroundWindow($h) | Out-Null
 $i = 0

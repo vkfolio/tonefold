@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.0 — 2026-10-07
+
+FLVSTX is now **Tonefold**: a standalone composer app first, with the CLAP/VST3 plugin as an optional
+add-on for DAWs. It is open source under GPL-3.0-or-later.
+
+- **The installer installs the app by default, with no administrator prompt.** Add `-Plugins` for the
+  CLAP and VST3 (one UAC prompt). The FL Studio piano-roll script is added only when FL Studio is
+  installed.
+- New name everywhere: the plugin (`Tonefold.clap`, `Tonefold.vst3`), the app, the CLI
+  (`tonefold-cli`), the crates (`tonefold-*`), the FL piano-roll script and the external-AI skill
+  (`tonefold-song`).
+- **Projects that used FLVSTX need Tonefold inserted in its place**: the plugin IDs changed with the
+  name, so FL Studio treats it as a different plugin.
+- The installer carries `%LOCALAPPDATA%\FLVSTX` (soundfont, exports) over to
+  `%LOCALAPPDATA%\Tonefold` and removes the old shortcut, script and skill. Run with `-Plugins`,
+  it also removes the old FLVSTX plugin files.
+- Settings are now `TONEFOLD_*` environment variables; the old `FLVSTX_*` names still work.
+- `agent/package-lock.json` is committed, so `npm ci` works from a fresh clone.
+- Contributor docs, issue templates, CI on Windows and a release workflow that builds the zip.
+
 ## 1.3.1 — 2026-09-12
 
 - The **Think** box works for Claude too: on by default (adaptive), off for faster, cheaper

@@ -1,7 +1,7 @@
 // Wire types shared with the Rust side (docs/protocol.md).
 //
 // Compatibility rule, in both directions, forever: every field added to an existing message is
-// optional here and `#[serde(default)]` in `crates/flvstx-ipc/src/lib.rs`. The plugin and the
+// optional here and `#[serde(default)]` in `crates/tonefold-ipc/src/lib.rs`. The plugin and the
 // sidecar ship separately, and an old plugin must be able to read a new sidecar's frames.
 
 export type Mode = "composer" | "producer";

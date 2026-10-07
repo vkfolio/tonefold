@@ -21,26 +21,26 @@ test("a write is denied until the plan is approved", async () => {
   const run = new ProducerRun();
   const fence = toolFence(run);
   run.phase = "planning";
-  assert.ok(denied(await fence(pre("mcp__flvstx__set_key_tempo"))), "set_key_tempo before approval");
-  assert.ok(denied(await fence(pre("mcp__flvstx__generate"))), "generate before approval");
+  assert.ok(denied(await fence(pre("mcp__tonefold__set_key_tempo"))), "set_key_tempo before approval");
+  assert.ok(denied(await fence(pre("mcp__tonefold__generate"))), "generate before approval");
   // Reading the song is how it plans at all, so reads are never fenced.
-  assert.ok(!denied(await fence(pre("mcp__flvstx__get_session"))));
-  assert.ok(!denied(await fence(pre("mcp__flvstx__analyze"))));
-  assert.ok(!denied(await fence(pre("mcp__flvstx__propose_plan"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__get_session"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__analyze"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__propose_plan"))));
 });
 
 test("approval opens the fence, and only for this run", async () => {
   const run = new ProducerRun();
   const fence = toolFence(run);
   run.phase = "executing";
-  assert.ok(!denied(await fence(pre("mcp__flvstx__set_key_tempo"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__set_key_tempo"))));
   run.reset();
-  assert.ok(denied(await fence(pre("mcp__flvstx__set_key_tempo"))), "reset re-closes the fence");
+  assert.ok(denied(await fence(pre("mcp__tonefold__set_key_tempo"))), "reset re-closes the fence");
 });
 
 test("the denial names the tool, so the model can act on it", async () => {
   const run = new ProducerRun();
-  const out: any = await toolFence(run)(pre("mcp__flvstx__set_notes"));
+  const out: any = await toolFence(run)(pre("mcp__tonefold__set_notes"));
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /'set_notes'/);
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /propose_plan/);
 });
@@ -90,28 +90,28 @@ test("a specialist may not write outside its own layers", async () => {
   const fence = toolFence(run);
   run.phase = "executing";
 
-  assert.ok(!denied(await fence(pre("mcp__flvstx__generate", { track: "chords" }, "harmony-form"))));
-  assert.ok(!denied(await fence(pre("mcp__flvstx__generate", { track: "pad2" }, "harmony-form"))), "numbered ids belong to their kind");
-  assert.ok(denied(await fence(pre("mcp__flvstx__generate", { track: "melody" }, "harmony-form"))), "the topline is not its to write");
-  assert.ok(denied(await fence(pre("mcp__flvstx__set_notes", { track: "drums" }, "harmony-form"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__generate", { track: "chords" }, "harmony-form"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__generate", { track: "pad2" }, "harmony-form"))), "numbered ids belong to their kind");
+  assert.ok(denied(await fence(pre("mcp__tonefold__generate", { track: "melody" }, "harmony-form"))), "the topline is not its to write");
+  assert.ok(denied(await fence(pre("mcp__tonefold__set_notes", { track: "drums" }, "harmony-form"))));
 
   // The vocal harmony line is the topline writer's, however much it sounds like harmony.
-  assert.ok(denied(await fence(pre("mcp__flvstx__generate", { track: "harmony" }, "harmony-form"))));
-  assert.ok(!denied(await fence(pre("mcp__flvstx__generate", { track: "harmony" }, "melody-topline"))));
+  assert.ok(denied(await fence(pre("mcp__tonefold__generate", { track: "harmony" }, "harmony-form"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__generate", { track: "harmony" }, "melody-topline"))));
 
   // add_layer names a `kind`, not a `track`, and is fenced the same way.
-  assert.ok(!denied(await fence(pre("mcp__flvstx__add_layer", { kind: "pad" }, "harmony-form"))));
-  assert.ok(denied(await fence(pre("mcp__flvstx__add_layer", { kind: "sub" }, "harmony-form"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__add_layer", { kind: "pad" }, "harmony-form"))));
+  assert.ok(denied(await fence(pre("mcp__tonefold__add_layer", { kind: "sub" }, "harmony-form"))));
 
   // Section-level work carries no track, and the producer itself is never boundary-checked.
-  assert.ok(!denied(await fence(pre("mcp__flvstx__set_form", {}, "harmony-form"))));
-  assert.ok(!denied(await fence(pre("mcp__flvstx__generate", { track: "drums" }))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__set_form", {}, "harmony-form"))));
+  assert.ok(!denied(await fence(pre("mcp__tonefold__generate", { track: "drums" }))));
 });
 
 test("the denial says who owns the layer, so the specialist can hand it back", async () => {
   const run = new ProducerRun();
   run.phase = "executing";
-  const out: any = await toolFence(run)(pre("mcp__flvstx__generate", { track: "bass" }, "harmony-form"));
+  const out: any = await toolFence(run)(pre("mcp__tonefold__generate", { track: "bass" }, "harmony-form"));
   const reason = out.hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /'bass' is not yours/);
   assert.match(reason, /chords, pad/);

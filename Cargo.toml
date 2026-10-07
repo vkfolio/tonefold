@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/flvstx-core", "crates/flvstx-ipc", "crates/flvstx-cli", "crates/flvstx-plugin", "xtask"]
+members = ["crates/tonefold-core", "crates/tonefold-ipc", "crates/tonefold-cli", "crates/tonefold-plugin", "xtask"]
 exclude = ["vendor/nih-plug"]
 
 [workspace.package]
 edition = "2021"
-version = "1.3.1"
+version = "1.4.0"
 license = "GPL-3.0-or-later"
-authors = ["vigneshaiml@gmail.com"]
+authors = ["me@vkfolio.com"]
 
 [workspace.dependencies]
 # Vendored nih-plug (vendor/nih-plug) with host-initiated GUI resizing implemented (CLAP/VST3/standalone).

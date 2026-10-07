@@ -6,7 +6,7 @@ import type { HookInput, PreToolUseHookInput } from "@anthropic-ai/claude-agent-
 import type { Phase, Plan, PlanDecision, TodoItem } from "./protocol.js";
 import { DOMAIN, kindOf } from "./specialists.js";
 
-/** Tools that only read. Everything else in the flvstx server writes and needs an approved plan. */
+/** Tools that only read. Everything else in the tonefold server writes and needs an approved plan. */
 export const READ_TOOLS = new Set([
   "get_session",
   "get_notes",
@@ -157,7 +157,7 @@ const denyLogged = (reason: string, log: (...a: unknown[]) => void) => {
 };
 
 /**
- * The fence. Registered for `mcp__flvstx__*` only, so anything reaching it is one of our tools.
+ * The fence. Registered for `mcp__tonefold__*` only, so anything reaching it is one of our tools.
  * Reads are always allowed — nobody can write music they have not heard — and two rules apply to
  * everything else: nothing may change the session until the user has approved a plan, and no
  * specialist may write outside its own layers.
@@ -167,7 +167,7 @@ export function toolFence(run: ProducerRun, log: (...a: unknown[]) => void = () 
     if (input.hook_event_name !== "PreToolUse") return {};
     const h = input as PreToolUseHookInput;
     log(`fence: ${h.tool_name} by ${h.agent_id ? h.agent_type : "producer"} phase=${run.phase}`);
-    const tool = String(h.tool_name).replace(/^mcp__flvstx__/, "");
+    const tool = String(h.tool_name).replace(/^mcp__tonefold__/, "");
     if (READ_TOOLS.has(tool) || tool === "propose_plan") return {};
     if (run.phase !== "executing") {
       return denyLogged(

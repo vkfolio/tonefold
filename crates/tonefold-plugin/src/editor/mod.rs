@@ -1,0 +1,2162 @@
+//! egui editor: layout, top bar (key/tempo/style), arrangement strip, transport, layer list,
+//! arrangement grid, per-layer suggestions with takes, agent connection management, persistence sync.
+
+mod chat;
+mod theme;
+mod piano_roll;
+
+use crate::state::{ChatRole, Persisted, Shared};
+use crate::TonefoldParams;
+use tonefold_core::generate::{generate_track, GenParams};
+use tonefold_core::ops::dispatch;
+use tonefold_core::theory::{ScaleKind, NOTE_NAMES_SHARP};
+use tonefold_core::{ChordEvent, Clip, ClipSource, Note};
+use tonefold_core::{Key, SectionRole, TrackRole};
+use tonefold_ipc::{AgentClient, AgentEvent, Backend, DEFAULT_OLLAMA_URL, DEFAULT_PORT};
+use nih_plug::prelude::Editor;
+use nih_plug_egui::create_egui_editor;
+use nih_plug_egui::egui::{self, Color32, RichText};
+use nih_plug_egui::resizable_window::ResizableWindow;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+pub fn track_color(kind: TrackRole) -> Color32 {
+    match kind {
+        TrackRole::Chords => Color32::from_rgb(120, 170, 255),
+        TrackRole::Pad => Color32::from_rgb(150, 140, 255),
+        TrackRole::Arpeggio => Color32::from_rgb(110, 210, 240),
+        TrackRole::Pluck => Color32::from_rgb(90, 200, 200),
+        TrackRole::Melody => Color32::from_rgb(255, 190, 90),
+        TrackRole::CounterMelody => Color32::from_rgb(255, 160, 140),
+        TrackRole::Harmony => Color32::from_rgb(240, 210, 140),
+        TrackRole::Bass => Color32::from_rgb(150, 230, 140),
+        TrackRole::Sub => Color32::from_rgb(110, 190, 110),
+        TrackRole::Drums => Color32::from_rgb(240, 120, 140),
+        TrackRole::Percussion => Color32::from_rgb(230, 150, 200),
+    }
+}
+
+pub struct EditorState {
+    params: Arc<TonefoldParams>,
+    agent: Mutex<Option<AgentClient>>,
+    child: Mutex<Option<std::process::Child>>,
+    port: u16,
+    pub input: String,
+    pub turn_active: bool,
+    pub streaming: String,
+    pub piano: piano_roll::PianoRollView,
+    last_persisted_revision: u64,
+    last_loaded_hash: u64,
+    status: String,
+    spawn_attempted_at: Option<std::time::Instant>,
+    /// Last standalone autosave, so a busy session does not write on every edit.
+    last_autosave: Option<std::time::Instant>,
+    /// Text/widget scale (1.0 = egui default). Defaults from the Windows DPI.
+    pub ui_scale: f32,
+    applied_scale: f32,
+    /// Alternative takes for the last "Suggest" (layered workflow).
+    takes: Vec<Take>,
+    take_track: Option<String>,
+    take_section: String,
+    take_idx: usize,
+    take_seed: u64,
+    /// Chat model when the provider is Claude: "default", "sonnet", "opus".
+    pub model: String,
+    /// "claude" (the Claude Code login) or "ollama" (a server, local or remote).
+    pub provider: String,
+    /// The Ollama server, and the edit buffer for it (committed when the field loses focus).
+    pub ollama_url: String,
+    pub ollama_url_draft: String,
+    /// The Ollama model to run; "" until one is picked. Ollama has no default to fall back on.
+    pub ollama_model: String,
+    /// What the server said it can run (`list_models`), and how that went.
+    pub ollama_models: Vec<String>,
+    pub models_status: String,
+    models_requested_at: Option<std::time::Instant>,
+    /// Let the model think before it answers, per provider: Claude does unless told not to; a
+    /// local model is slow enough already, so it does not unless asked.
+    pub claude_think: bool,
+    pub ollama_think: bool,
+    /// The reasoning streamed so far this turn (main thread only), shown under the live bubble.
+    pub thinking: String,
+    /// Where a message goes: the one-shot composer, or the producer that plans first.
+    pub mode: String,
+    /// Producer phase from the sidecar: idle | planning | awaiting_approval | executing.
+    pub phase: String,
+    /// What the last turn cost, and what this session has cost so far. Shown, never enforced.
+    pub last_cost: Option<f64>,
+    pub session_cost: f64,
+    /// When the agent last said anything. A long run that has gone quiet is worth flagging.
+    pub last_event: Option<std::time::Instant>,
+    show_arrangement: bool,
+    show_composer: bool,
+    autosave_pending: bool,
+    add_kind: TrackRole,
+    /// Output channel chosen in the top bar this frame (applied through the param setter).
+    pending_output: Option<i32>,
+    pending_sound: Option<bool>,
+    pending_gain: Option<f32>,
+    /// Edit buffers for single-line text fields (committed when the field loses focus).
+    style_draft: String,
+    style_focused: bool,
+    name_draft: String,
+    name_focused: bool,
+    pub md_cache: egui_commonmark::CommonMarkCache,
+}
+
+/// One alternative produced by "Suggest": optional chords (for chord layers) plus the notes.
+#[derive(Debug, Clone)]
+struct Take {
+    label: String,
+    chords: Option<Vec<ChordEvent>>,
+    notes: Vec<Note>,
+}
+
+#[cfg(windows)]
+fn system_dpi_scale() -> f32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetDpiForSystem() -> u32;
+    }
+    // SAFETY: plain Win32 call with no arguments.
+    let dpi = unsafe { GetDpiForSystem() };
+    // DPI-unaware hosts report 96; assume a typical 150% laptop display then (the picker persists the user's choice).
+    if dpi <= 96 { 1.5 } else { (dpi as f32 / 96.0).clamp(1.0, 2.5) }
+}
+#[cfg(not(windows))]
+fn system_dpi_scale() -> f32 {
+    1.0
+}
+
+/// Scales fonts and spacing (instead of pixels_per_point, which the host wrapper owns).
+pub fn apply_ui_scale(ctx: &egui::Context, scale: f32) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::dark();
+    style.visuals.override_text_color = Some(theme::TEXT);
+    style.visuals.panel_fill = theme::PANEL;
+    style.visuals.window_fill = theme::SURFACE;
+    style.visuals.extreme_bg_color = theme::CANVAS;
+    style.visuals.faint_bg_color = theme::SURFACE;
+    style.visuals.selection.bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.selection.stroke = egui::Stroke::new(1.0, theme::ACCENT);
+    for widget in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active, &mut style.visuals.widgets.open] {
+        widget.corner_radius = egui::CornerRadius::same(6);
+        widget.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
+        widget.fg_stroke = egui::Stroke::new(1.0, theme::TEXT);
+        widget.weak_bg_fill = theme::SURFACE;
+        widget.bg_fill = theme::SURFACE;
+    }
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(48, 61, 73);
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 61, 73);
+    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(35, 83, 85);
+    style.visuals.widgets.noninteractive.fg_stroke.color = theme::MUTED;
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
+    let base: [(egui::TextStyle, f32); 5] = [
+        (egui::TextStyle::Small, 11.0),
+        (egui::TextStyle::Body, 13.0),
+        (egui::TextStyle::Button, 13.0),
+        (egui::TextStyle::Heading, 20.0),
+        (egui::TextStyle::Monospace, 12.5),
+    ];
+    for (ts, size) in base {
+        if let Some(f) = style.text_styles.get_mut(&ts) {
+            f.size = size * scale;
+        }
+    }
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0) * scale;
+    style.spacing.button_padding = egui::vec2(10.0, 5.0) * scale;
+    style.spacing.interact_size = egui::vec2(40.0, 26.0) * scale;
+    style.spacing.icon_width = 14.0 * scale;
+    style.spacing.combo_width = 100.0 * scale;
+    ctx.set_style(style);
+}
+
+impl EditorState {
+    fn setter_output(&mut self, setter: &nih_plug::prelude::ParamSetter) {
+        if let Some(v) = self.pending_output.take() {
+            setter.begin_set_parameter(&self.params.output);
+            setter.set_parameter(&self.params.output, v);
+            setter.end_set_parameter(&self.params.output);
+        }
+        if let Some(v) = self.pending_sound.take() {
+            setter.begin_set_parameter(&self.params.sound);
+            setter.set_parameter(&self.params.sound, v);
+            setter.end_set_parameter(&self.params.sound);
+        }
+        if let Some(v) = self.pending_gain.take() {
+            setter.begin_set_parameter(&self.params.sound_gain);
+            setter.set_parameter(&self.params.sound_gain, v);
+            setter.end_set_parameter(&self.params.sound_gain);
+        }
+    }
+
+    fn agent_connected(&self) -> bool {
+        self.agent.lock().ok().and_then(|a| a.as_ref().map(|c| c.is_connected())).unwrap_or(false)
+    }
+    fn agent_spawned(&self) -> bool {
+        self.child.lock().map(|c| c.is_some()).unwrap_or(false)
+    }
+
+    /// Starts the sidecar if needed and connects the client.
+    fn ensure_agent(&mut self, shared: &Shared) {
+        if !tonefold_ipc::port_open(self.port) {
+            let recently = self.spawn_attempted_at.map(|t| t.elapsed().as_secs() < 5).unwrap_or(false);
+            if !recently {
+                self.spawn_attempted_at = Some(std::time::Instant::now());
+                match tonefold_ipc::spawn_agent(self.port) {
+                    Ok(c) => {
+                        if let Ok(mut g) = self.child.lock() {
+                            *g = Some(c);
+                        }
+                        shared.push_chat(ChatRole::System, format!("starting composer agent on port {}…", self.port));
+                    }
+                    Err(e) => shared.push_chat(ChatRole::System, format!("could not start agent (node + agent/dist needed): {e}")),
+                }
+            }
+        }
+        if let Ok(mut g) = self.agent.lock() {
+            if g.is_none() {
+                let client = AgentClient::connect(self.port, shared.store.clone());
+                if let Ok(sid) = shared.agent_sessions.lock() {
+                    if let Ok(mut s) = client.sessions.lock() {
+                        *s = sid.clone();
+                    }
+                }
+                *g = Some(client);
+            }
+        }
+    }
+
+    fn send_message(&mut self, shared: &Shared, text: &str) {
+        self.ensure_agent(shared);
+        shared.push_chat(ChatRole::User, text);
+        let ctx = {
+            let g = shared.lock_store();
+            let ui = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+            let mut c = tonefold_ipc::context_for(&g);
+            if let Some(sec) = ui.selected_section {
+                c.push_str(&format!("\nSelected section in the UI: {sec}\nSelected layer in the UI: {}\n", ui.selected_track));
+            }
+            c
+        };
+        let backend = self.backend();
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.send_turn(text, &ctx, &backend, &self.mode);
+                self.turn_active = true;
+                self.streaming.clear();
+                self.thinking.clear();
+            }
+        }
+    }
+
+    /// What the chat header is set to, as the sidecar wants it.
+    pub fn backend(&self) -> Backend {
+        if self.provider == "ollama" {
+            Backend {
+                provider: "ollama".into(),
+                base_url: self.ollama_url.clone(),
+                model: Some(self.ollama_model.clone()).filter(|m| !m.is_empty()),
+                think: Some(self.ollama_think),
+            }
+        } else {
+            Backend { think: Some(self.claude_think), ..Backend::claude(if self.model == "default" { None } else { Some(&self.model) }) }
+        }
+    }
+
+    /// Restores a saved backend choice; anything it does not name keeps the current value.
+    fn adopt_backend(&mut self, b: &Backend) {
+        if b.is_ollama() {
+            self.provider = "ollama".into();
+            if !b.base_url.is_empty() {
+                self.ollama_url = b.base_url.clone();
+                self.ollama_url_draft = self.ollama_url.clone();
+            }
+            self.ollama_model = b.model.clone().unwrap_or_default();
+            if let Some(t) = b.think {
+                self.ollama_think = t;
+            }
+        } else if !b.provider.is_empty() {
+            self.provider = "claude".into();
+            self.model = b.model.clone().unwrap_or_else(|| "default".into());
+            if let Some(t) = b.think {
+                self.claude_think = t;
+            }
+        }
+    }
+
+    /// Asks the Ollama server what it can run. Starts the sidecar if needed: the plugin has no
+    /// HTTP client of its own, and the sidecar already talks to the server.
+    pub fn refresh_models(&mut self, shared: &Shared) {
+        self.ensure_agent(shared);
+        self.models_status = "asking the server…".into();
+        self.models_requested_at = Some(std::time::Instant::now());
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.list_models(&self.ollama_url);
+            }
+        }
+    }
+
+    /// A model list that never came back, most often because the sidecar was still starting when
+    /// it was asked — so ask again once, rather than leave "asking…" on screen forever.
+    fn nudge_models(&mut self, shared: &Shared) {
+        if self.provider != "ollama" || !self.agent_connected() {
+            return;
+        }
+        let stale = self.models_requested_at.map(|t| t.elapsed().as_secs() >= 10).unwrap_or(false);
+        let never = self.models_requested_at.is_none() && self.ollama_models.is_empty();
+        if never || (stale && self.models_status.starts_with("asking")) {
+            self.refresh_models(shared);
+        }
+    }
+
+    /// Answers the producer's plan. Goes as its own message: the producer is parked inside a tool
+    /// call, so this can never travel as a user message.
+    pub fn answer_plan(&mut self, shared: &Shared, decision: &str, notes: Option<&str>) {
+        let id = shared.plan.lock().ok().and_then(|p| p.as_ref().map(|p| p.id.clone()));
+        let Some(id) = id else { return };
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.send_plan_decision(&id, decision, notes);
+            }
+        }
+        // Undo's ring is 64 deep and a run makes far more changes than that, so approving marks
+        // the session first: that mark is the only way back afterwards.
+        let mark = (decision == "approve").then(|| shared.lock_store().checkpoint("before this plan"));
+        if let Ok(mut p) = shared.plan.lock() {
+            if let Some(p) = p.as_mut() {
+                p.status = match decision {
+                    "approve" => "executing".into(),
+                    "reject" => "sent_back".into(),
+                    _ => "cancelled".into(),
+                };
+                if let Some(mark) = mark {
+                    p.checkpoint = Some(mark);
+                }
+            }
+        }
+    }
+
+    /// Puts the session back to where it was when this plan was approved.
+    pub fn revert_run(&mut self, shared: &Shared) {
+        let id = shared.plan.lock().ok().and_then(|p| p.as_ref().and_then(|p| p.checkpoint.clone()));
+        let Some(id) = id else { return };
+        let r = {
+            let mut g = shared.lock_store();
+            tonefold_core::ops::dispatch(&mut g, "revert_to_checkpoint", &serde_json::json!({ "checkpoint": id }))
+        };
+        match r {
+            Ok(_) => {
+                shared.push_chat(ChatRole::System, "reverted to before the plan ran");
+                if let Ok(mut p) = shared.plan.lock() {
+                    *p = None;
+                }
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("could not revert: {e}")),
+        }
+    }
+
+    fn cancel_turn(&mut self) {
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                a.cancel();
+            }
+        }
+    }
+
+    /// Hands one layer to the composer instead of the rule engine. The engine reseeded gives you a
+    /// different roll of the same dice; the composer chooses the approach — the pattern, the rate,
+    /// whether to write the notes itself — from what the rest of the song is doing.
+    fn ask_composer_for_layer(&mut self, shared: &Shared, track: &str, section: &str) {
+        let (layer, section_name, kind, style) = {
+            let g = shared.lock_store();
+            let t = g.session.track_by(track);
+            let s = g.session.section(section);
+            (
+                t.map(|t| t.name.clone()).unwrap_or_else(|| track.to_string()),
+                s.map(|s| s.name.clone()).unwrap_or_else(|| section.to_string()),
+                t.map(|t| t.kind).unwrap_or(TrackRole::Melody),
+                g.session.style.clone(),
+            )
+        };
+        let aim = match kind {
+            TrackRole::Chords => "a progression that carries the section and fits whatever melody is already there",
+            TrackRole::Melody => "a line with one idea in it that develops, not a run of notes",
+            TrackRole::Bass => "a part that locks to the kick and leaves the melody room",
+            TrackRole::Drums | TrackRole::Percussion => "a groove with real dynamics, not a grid",
+            TrackRole::Arpeggio | TrackRole::Pluck => "a figure that moves under the harmony without fighting the melody",
+            TrackRole::Pad => "something that supports the harmony and breathes",
+            _ => "a part that earns its place in the arrangement",
+        };
+        let prompt = format!(
+            "Write the {layer} layer for the \"{section_name}\" section — that layer only, nothing else. \
+             Aim for {aim}. Read the section first, then choose the approach yourself: generate with \
+             parameters that suit {style} and what the other layers are doing, or write the notes with \
+             set_notes if you have a specific idea. Check it with analyze, fix what it flags, and reply \
+             in one line saying what you wrote and why."
+        );
+        self.send_message(shared, &prompt);
+    }
+
+    /// Produces three alternatives for one layer, constrained by the layers that already exist
+    /// (melody -> harmonize chords to it; chords -> melody over them; both -> everything else fits).
+    fn suggest(&mut self, shared: &Shared, track: &str, section: &str) {
+        let session = shared.lock_store().session.clone();
+        let Some(sec) = session.section(section).cloned() else { return };
+        let Some(t) = session.track_by(track).cloned() else { return };
+        if t.locked {
+            shared.push_chat(ChatRole::System, format!("{} is locked; unlock it (L) to get suggestions", t.name));
+            return;
+        }
+        let tid = t.id.clone();
+        self.take_seed = self.take_seed.wrapping_add(7);
+        let base_seed = self.take_seed;
+        let has_melody = !session.notes_of_kind(TrackRole::Melody, &sec.id).is_empty();
+        let mut takes = Vec::new();
+        let mut run = |label: String, chords: Option<Vec<ChordEvent>>, p: GenParams| {
+            let mut clone = session.clone();
+            if let Some(ch) = &chords {
+                clone.section_mut(&sec.id).unwrap().chords = ch.clone();
+            }
+            clone.track_by_mut(&tid).unwrap().locked = false;
+            clone.track_by_mut(&tid).unwrap().inactive.remove(&sec.id);
+            if let Ok(clip) = generate_track(&mut clone, &tid, &sec.id, &p) {
+                takes.push(Take { label, chords, notes: clip.notes });
+            }
+        };
+        match t.kind {
+            TrackRole::Chords => {
+                let cands: Vec<(String, Vec<ChordEvent>)> = if has_melody {
+                    let melody = session.notes_of_kind(TrackRole::Melody, &sec.id);
+                    tonefold_core::generate::harmonize::harmonize(&session.key, &melody, sec.bars, session.bar_ticks(), None, 3)
+                        .into_iter()
+                        .map(|h| (format!("fits melody - {}", h.label), h.events))
+                        .collect()
+                } else {
+                    tonefold_core::generate::chords::suggest_progressions(&session, None, 3, base_seed)
+                        .into_iter()
+                        .filter_map(|(sym, rom)| tonefold_core::notation::parse_chords(&sym, &session.key, sec.bars, session.bar_ticks()).ok().map(|ev| (rom, ev)))
+                        .collect()
+                };
+                for (label, events) in cands {
+                    run(label, Some(events), GenParams { seed: Some(base_seed), ..Default::default() });
+                }
+            }
+            TrackRole::Melody => {
+                for (i, contour) in ["arch", "rise", "wave"].iter().enumerate() {
+                    run(format!("{contour} contour"), None, GenParams { seed: Some(base_seed + i as u64 * 13), contour: Some(contour.to_string()), ..Default::default() });
+                }
+            }
+            TrackRole::Bass => {
+                for (i, pat) in [None, Some("root5"), Some("push")].iter().enumerate() {
+                    run(pat.map(|s| format!("{s} pattern")).unwrap_or_else(|| "style default".into()), None, GenParams { seed: Some(base_seed + i as u64 * 17), pattern: pat.map(|s| s.to_string()), ..Default::default() });
+                }
+            }
+            TrackRole::Arpeggio => {
+                for (i, (pat, rate)) in [("up", "16"), ("updown", "8"), ("chord", "16")].iter().enumerate() {
+                    run(format!("{pat} 1/{rate}"), None, GenParams { seed: Some(base_seed + i as u64 * 23), pattern: Some(pat.to_string()), rate: Some(rate.to_string()), ..Default::default() });
+                }
+            }
+            TrackRole::Percussion => {
+                for (i, pat) in ["mixed", "shaker", "conga"].iter().enumerate() {
+                    run(pat.to_string(), None, GenParams { seed: Some(base_seed + i as u64 * 29), pattern: Some(pat.to_string()), ..Default::default() });
+                }
+            }
+            TrackRole::Harmony => {
+                for (i, pat) in ["third", "sixth", "above"].iter().enumerate() {
+                    run(pat.to_string(), None, GenParams { seed: Some(base_seed + i as u64 * 31), pattern: Some(pat.to_string()), ..Default::default() });
+                }
+            }
+            _ => {
+                for (i, (label, de)) in [("as is", 0.0f32), ("lighter", -0.25), ("busier", 0.25)].iter().enumerate() {
+                    run(label.to_string(), None, GenParams { seed: Some(base_seed + i as u64 * 19), energy: Some((sec.energy + de).clamp(0.05, 1.0)), ..Default::default() });
+                }
+            }
+        }
+        if takes.is_empty() {
+            shared.push_chat(ChatRole::System, format!("no {} suggestions could be made for {}", t.name, sec.name));
+            return;
+        }
+        self.takes = takes;
+        self.take_track = Some(tid);
+        self.take_section = sec.id.clone();
+        self.take_idx = 0;
+        self.apply_take(shared, 0);
+    }
+
+    fn apply_take(&mut self, shared: &Shared, idx: usize) {
+        let (Some(tid), Some(take)) = (self.take_track.clone(), self.takes.get(idx).cloned()) else { return };
+        self.take_idx = idx;
+        let section = self.take_section.clone();
+        let mut g = shared.lock_store();
+        let _ = g.mutate(|s| {
+            if let Some(ch) = &take.chords {
+                if let Some(sec) = s.section_mut(&section) {
+                    sec.chords = ch.clone();
+                }
+            }
+            if let Some(t) = s.track_by_mut(&tid) {
+                t.inactive.remove(&section);
+            }
+            s.set_clip(&tid, &section, Clip::new(take.notes.clone(), ClipSource::Generated { seed: 0, params: serde_json::json!({ "take": take.label }) }))
+        });
+    }
+
+    fn poll_agent(&mut self, shared: &Shared) {
+        let mut events = Vec::new();
+        if let Ok(g) = self.agent.lock() {
+            if let Some(a) = g.as_ref() {
+                while let Some(e) = a.try_recv() {
+                    events.push(e);
+                }
+            }
+        }
+        for e in events {
+            self.last_event = Some(std::time::Instant::now());
+            match e {
+                AgentEvent::Connected => shared.push_chat(ChatRole::System, "composer connected"),
+                AgentEvent::Disconnected { reason } => {
+                    self.turn_active = false;
+                    self.phase = "idle".into();
+                    // The sidecar settles a parked plan as cancelled when the socket drops, so a
+                    // card still offering Approve would be a button that does nothing.
+                    if let Ok(mut p) = shared.plan.lock() {
+                        if p.as_ref().map(|p| p.status == "awaiting_approval").unwrap_or(false) {
+                            *p = None;
+                            shared.push_chat(ChatRole::System, "the plan was dropped when the composer disconnected");
+                        }
+                    }
+                    if let Ok(mut t) = shared.todos.lock() {
+                        t.clear();
+                    }
+                    shared.push_chat(ChatRole::System, format!("composer disconnected ({reason})"));
+                }
+                AgentEvent::Ready { backend, providers, ollama_url, .. } => {
+                    self.status = format!("agent ready ({backend})");
+                    // A sidecar started with its own server (TONEFOLD_OLLAMA_URL) is the better
+                    // default than ours, but never over a URL the user typed or a project saved.
+                    if let Some(url) = ollama_url.filter(|u| !u.is_empty()) {
+                        if self.ollama_url == DEFAULT_OLLAMA_URL {
+                            self.ollama_url = url.clone();
+                            self.ollama_url_draft = url;
+                        }
+                    }
+                    if self.provider == "ollama" && !providers.is_empty() && !providers.iter().any(|p| p == "ollama") {
+                        shared.push_chat(ChatRole::System, "this composer sidecar predates Ollama support; rebuild agent/ (npm run build)");
+                    }
+                    if self.provider == "ollama" {
+                        self.refresh_models(shared);
+                    }
+                }
+                AgentEvent::Models { base_url, models, error, .. } => {
+                    self.models_requested_at = None;
+                    if base_url != self.ollama_url && !base_url.is_empty() {
+                        // The sidecar normalised what we sent (scheme, trailing slash); show that.
+                        self.ollama_url = base_url.clone();
+                        self.ollama_url_draft = base_url;
+                    }
+                    match error {
+                        Some(e) => {
+                            self.ollama_models.clear();
+                            self.models_status = e;
+                        }
+                        None => {
+                            self.models_status = if models.is_empty() { "no models pulled on that server (ollama pull …)".into() } else { String::new() };
+                            if !models.contains(&self.ollama_model) {
+                                self.ollama_model = models.first().cloned().unwrap_or_default();
+                            }
+                            self.ollama_models = models;
+                        }
+                    }
+                }
+                AgentEvent::AssistantDelta { text, agent, .. } => {
+                    // Only the main thread streams into the live bubble; a forwarded specialist
+                    // would otherwise interleave character by character into the producer's prose.
+                    if agent.is_none() {
+                        self.streaming.push_str(&text);
+                    }
+                }
+                AgentEvent::AssistantMessage { text, agent, .. } => {
+                    if agent.is_none() {
+                        self.streaming.clear();
+                    }
+                    shared.push_chat_from(ChatRole::Assistant, text, agent);
+                }
+                AgentEvent::ThinkingDelta { text, agent } => {
+                    if agent.is_none() {
+                        self.thinking.push_str(&text);
+                    }
+                }
+                AgentEvent::Thinking { text, agent } => {
+                    if agent.is_none() {
+                        self.thinking.clear();
+                    }
+                    shared.push_chat_from(ChatRole::Thinking, text, agent);
+                }
+                AgentEvent::ToolCall { name, input, agent, .. } => {
+                    let short = summarize_input(&name, &input);
+                    shared.push_chat_from(ChatRole::Tool, format!("{name} {short}"), agent);
+                }
+                AgentEvent::ToolResult { .. } => {}
+                AgentEvent::Rpc { .. } => {}
+                AgentEvent::SessionChanged => {}
+                AgentEvent::Done { session_id, cost_usd, mode, provider, .. } => {
+                    self.turn_active = false;
+                    if let Some(c) = cost_usd {
+                        self.last_cost = Some(c);
+                        self.session_cost += c;
+                    }
+                    self.phase = "idle".into();
+                    if let Ok(mut t) = shared.todos.lock() {
+                        t.clear();
+                    }
+                    self.streaming.clear();
+                    self.thinking.clear();
+                    if !session_id.is_empty() {
+                        if let Ok(mut s) = shared.agent_sessions.lock() {
+                            s.insert(Backend::session_key(provider.as_deref(), mode.as_deref().unwrap_or("composer")), session_id);
+                        }
+                    }
+                }
+                AgentEvent::Error { message, .. } => {
+                    self.turn_active = false;
+                    shared.push_chat(ChatRole::System, format!("error: {message}"));
+                }
+                AgentEvent::PlanProposed { plan_id, plan } => {
+                    shared.push_chat_from(ChatRole::Assistant, plan_markdown(&plan), Some("plan".into()));
+                    if let Ok(mut p) = shared.plan.lock() {
+                        *p = Some(crate::state::PlanState { id: plan_id, plan, status: "awaiting_approval".into(), checkpoint: None });
+                    }
+                }
+                AgentEvent::PlanResolved { decision, .. } => {
+                    if decision == "stale" {
+                        shared.push_chat(ChatRole::System, "that plan was already answered");
+                    }
+                }
+                AgentEvent::Todos { items } => {
+                    if let Ok(mut t) = shared.todos.lock() {
+                        *t = items;
+                    }
+                }
+                AgentEvent::Phase { phase } => {
+                    if phase == "executing" {
+                        if let Ok(mut p) = shared.plan.lock() {
+                            if let Some(p) = p.as_mut() {
+                                p.status = "executing".into();
+                            }
+                        }
+                    }
+                    if phase == "idle" {
+                        if let Ok(mut p) = shared.plan.lock() {
+                            // Keep a finished plan — its checkpoint is the way back — but drop one
+                            // that never got approved.
+                            match p.as_mut() {
+                                Some(s) if s.status == "executing" => s.status = "done".into(),
+                                Some(s) if s.status != "sent_back" => *p = None,
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.phase = phase;
+                }
+                AgentEvent::Pong => {}
+                // Frames from a newer sidecar than this build: already logged, nothing to show.
+                AgentEvent::Unknown => {}
+            }
+        }
+        self.nudge_models(shared);
+    }
+
+    /// Keeps the playback buffer and the persisted JSON in sync with the store.
+    fn sync_state(&mut self, shared: &Shared) {
+        // Project load detection: the host wrote a new state blob.
+        let json = self.params.state_json.read().map(|s| s.clone()).unwrap_or_default();
+        let h = crate::hash_str(&json);
+        if !json.is_empty() && h != self.last_loaded_hash {
+            self.last_loaded_hash = h;
+            let current = serde_json::to_string(&shared.to_persisted()).unwrap_or_default();
+            if crate::hash_str(&current) != h {
+                if let Ok(p) = serde_json::from_str::<Persisted>(&json) {
+                    if let Some(sc) = p.ui_scale {
+                        self.ui_scale = sc;
+                    }
+                    if let Some(b) = &p.backend {
+                        self.adopt_backend(b);
+                    }
+                    shared.load_persisted(p);
+                }
+            }
+        }
+        // Keep the selected layer valid.
+        {
+            let g = shared.lock_store();
+            if let Ok(mut u) = shared.ui.lock() {
+                if g.session.track_by(&u.selected_track).is_none() {
+                    if let Some(t) = g.session.tracks.first() {
+                        u.selected_track = t.id.clone();
+                    }
+                }
+            }
+        }
+        let rev = shared.lock_store().revision;
+        if shared.needs_rebuild() {
+            shared.rebuild_playback();
+        }
+        if rev != self.last_persisted_revision {
+            self.last_persisted_revision = rev;
+            let mut p = shared.to_persisted();
+            p.ui_scale = Some(self.ui_scale);
+            p.backend = Some(self.backend());
+            if let Ok(s) = serde_json::to_string(&p) {
+                self.last_loaded_hash = crate::hash_str(&s);
+                if let Ok(mut w) = self.params.state_json.write() {
+                    w.clone_from(&s);
+                }
+                self.autosave_pending = true;
+            }
+        }
+        // Flush the final edit after a burst, even if no further revision arrives.
+        if is_standalone() && self.autosave_pending
+            && self.last_autosave.map(|t| t.elapsed().as_secs_f32() >= 2.0).unwrap_or(true)
+        {
+            self.last_autosave = Some(std::time::Instant::now());
+            if let Some(path) = autosave_path() {
+                match save_project(shared, self, &path) {
+                    Ok(()) => self.autosave_pending = false,
+                    Err(e) => self.status = format!("Autosave failed: {e}"),
+                }
+            }
+        }
+    }
+}
+
+fn summarize_input(name: &str, input: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(o) = input.as_object() {
+        for (k, v) in o {
+            let s = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let s: String = s.chars().take(60).collect();
+            parts.push(format!("{k}={s}"));
+        }
+    }
+    let _ = name;
+    parts.join(" ")
+}
+
+fn initial_state(params: Arc<TonefoldParams>) -> EditorState {
+    EditorState {
+        params: params.clone(),
+        agent: Mutex::new(None),
+        child: Mutex::new(None),
+        port: tonefold_core::env_var("PORT").and_then(|p| p.to_str()?.parse().ok()).unwrap_or(DEFAULT_PORT),
+        input: String::new(),
+        turn_active: false,
+        streaming: String::new(),
+        piano: {
+            let mut p = piano_roll::PianoRollView::default();
+            p.row_h = 11.0 * system_dpi_scale();
+            p
+        },
+        last_persisted_revision: u64::MAX,
+        last_loaded_hash: 0,
+        status: String::new(),
+        spawn_attempted_at: None,
+        last_autosave: None,
+        ui_scale: system_dpi_scale(),
+        applied_scale: 0.0,
+        takes: Vec::new(),
+        take_track: None,
+        take_section: String::new(),
+        take_idx: 0,
+        take_seed: 100,
+        model: "default".into(),
+        provider: "claude".into(),
+        ollama_url: DEFAULT_OLLAMA_URL.into(),
+        ollama_url_draft: DEFAULT_OLLAMA_URL.into(),
+        ollama_model: String::new(),
+        ollama_models: Vec::new(),
+        models_status: String::new(),
+        models_requested_at: None,
+        claude_think: true,
+        ollama_think: false,
+        thinking: String::new(),
+        mode: "composer".into(),
+        phase: "idle".into(),
+        last_cost: None,
+        session_cost: 0.0,
+        last_event: None,
+        show_arrangement: false,
+        show_composer: true,
+        autosave_pending: false,
+        add_kind: TrackRole::Arpeggio,
+        pending_output: None,
+        pending_sound: None,
+        pending_gain: None,
+        style_draft: String::new(),
+        style_focused: false,
+        name_draft: String::new(),
+        name_focused: false,
+        md_cache: egui_commonmark::CommonMarkCache::default(),
+    }
+}
+
+pub fn create(params: Arc<TonefoldParams>, shared: Arc<Shared>) -> Option<Box<dyn Editor>> {
+    let state = initial_state(params.clone());
+    let mut state = state;
+    // The standalone picks up where it left off; in a DAW the host restores the project instead.
+    if is_standalone() {
+        if let Some(note) = tonefold_core::midi::default_export_dir().parent().map(|d| d.join("last-project.txt")) {
+            if let Ok(p) = std::fs::read_to_string(&note) {
+                let p = std::path::PathBuf::from(p.trim());
+                if p.is_file() {
+                    set_project_path(Some(p));
+                }
+            }
+        }
+        if let Some(path) = autosave_path().filter(|p| p.is_file()) {
+            if let Err(e) = open_project(&shared, &mut state, &path) {
+                dbg_log(&format!("autosave restore failed: {e}"));
+            }
+        }
+    }
+
+    create_egui_editor(
+        params.editor_state.clone(),
+        state,
+        move |ctx, state| {
+            apply_ui_scale(ctx, state.ui_scale);
+            state.piano.row_h = 11.0 * state.ui_scale;
+            state.applied_scale = state.ui_scale;
+        },
+        move |ctx, setter, st| {
+            st.setter_output(setter);
+            if (st.applied_scale - st.ui_scale).abs() > 0.01 {
+                apply_ui_scale(ctx, st.ui_scale);
+                st.applied_scale = st.ui_scale;
+                st.piano.row_h = 11.0 * st.ui_scale;
+            }
+            st.poll_agent(&shared);
+            st.sync_state(&shared);
+            poll_drag_result(&shared);
+            poll_export(&shared);
+            poll_project(st, &shared);
+            draw(ctx, st, &shared);
+            ctx.request_repaint_after(std::time::Duration::from_millis(if st.turn_active || shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed) { 33 } else { 120 }));
+        },
+    )
+}
+
+fn draw(ctx: &egui::Context, st: &mut EditorState, shared: &Shared) {
+    let scale = st.ui_scale;
+    egui::TopBottomPanel::top("top").frame(theme::panel_frame()).show(ctx, |ui| {
+        top_bar(ui, st, shared);
+        ui.add_space(5.0 * scale);
+        sections_strip(ui, st, shared);
+        if st.show_arrangement {
+            egui::ScrollArea::both().id_salt("arrangement-scroll").max_height(150.0 * scale).show(ui, |ui| {
+                arrangement_grid(ui, st, shared);
+            });
+        }
+    });
+    egui::TopBottomPanel::bottom("bottom").frame(theme::panel_frame()).show(ctx, |ui| {
+        transport(ui, st, shared);
+    });
+    if st.show_composer {
+        let max_width = (ctx.screen_rect().width() * 0.42).max(220.0);
+        egui::SidePanel::left("composer-v2").frame(theme::panel_frame()).resizable(true).default_width((280.0 * scale).min(max_width)).min_width(220.0).max_width(max_width).show(ctx, |ui| {
+            chat::show(ui, st, shared);
+        });
+    }
+    egui::SidePanel::right("layers-v2").frame(theme::panel_frame()).resizable(true).default_width(220.0 * scale).min_width(205.0 * scale).max_width(300.0 * scale).show(ctx, |ui| {
+        layers_panel(ui, st, shared);
+    });
+    // Central area: piano roll, with nih-plug's resize corner (the host owns the window size; the
+    // corner asks the host to resize).
+    let egui_state = st.params.editor_state.clone();
+    let min = egui::vec2(900.0, 560.0);
+    ResizableWindow::new("tonefold-window").min_size(min).show(ctx, &egui_state, |ui| {
+        egui::Frame::new().fill(theme::CANVAS).inner_margin(12.0).show(ui, |ui| {
+            generation_bar(ui, st, shared);
+            ui.add_space(8.0);
+            piano_roll::show(ui, &mut st.piano, shared);
+        });
+    });
+}
+
+fn top_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let (key, tempo, style, ts) = {
+        let g = shared.lock_store();
+        (g.session.key, g.session.tempo, g.session.style.clone(), g.session.time_sig)
+    };
+    ui.horizontal_wrapped(|ui| {
+        theme::brand(ui, st.ui_scale);
+        ui.add_space(16.0 * st.ui_scale);
+        let file = project_path();
+        ui.menu_button("Song…", |ui| {
+            match &file {
+                Some(p) => ui.label(RichText::new(p.display().to_string()).small().weak()),
+                None => ui.label(RichText::new("not saved yet").small().weak()),
+            };
+            ui.separator();
+            if ui.button("New").on_hover_text("Empty song and a fresh chat (save first if you want to keep this one)").clicked() {
+                new_project(shared, st);
+                ui.close_menu();
+            }
+            if ui.button("Open…").clicked() {
+                ask_project(false);
+                ui.close_menu();
+            }
+            if ui.add_enabled(file.is_some(), egui::Button::new("Save")).clicked() {
+                if let Some(p) = &file {
+                    match save_project(shared, st, p) {
+                        Ok(()) => shared.push_chat(ChatRole::System, format!("saved {}", p.display())),
+                        Err(e) => shared.push_chat(ChatRole::System, format!("save failed: {e}")),
+                    }
+                }
+                ui.close_menu();
+            }
+            if ui.button("Save as…").clicked() {
+                ask_project(true);
+                ui.close_menu();
+            }
+        });
+        if let Some(p) = &file {
+            if let Some(n) = p.file_name() {
+                ui.label(RichText::new(n.to_string_lossy()).small().weak());
+            }
+        }
+        ui.separator();
+        let mut root = key.root as usize;
+        let mut scale = key.scale;
+        egui::ComboBox::from_id_salt("root").width(50.0 * st.ui_scale).selected_text(NOTE_NAMES_SHARP[root]).show_ui(ui, |ui| {
+            for (i, n) in NOTE_NAMES_SHARP.iter().enumerate() {
+                ui.selectable_value(&mut root, i, *n);
+            }
+        });
+        egui::ComboBox::from_id_salt("scale").width(130.0 * st.ui_scale).selected_text(scale.name()).show_ui(ui, |ui| {
+            for s in ScaleKind::ALL {
+                ui.selectable_value(&mut scale, s, s.name());
+            }
+        });
+        if root != key.root as usize || scale != key.scale {
+            let mut g = shared.lock_store();
+            let _ = g.mutate(|s| {
+                s.key = Key::new(root as u8, scale);
+                Ok(())
+            });
+        }
+        ui.separator();
+        let mut t = tempo;
+        ui.label("BPM");
+        if ui.add(egui::DragValue::new(&mut t).range(30.0..=300.0).speed(0.5).fixed_decimals(0)).changed() {
+            let mut g = shared.lock_store();
+            let _ = g.mutate(|s| {
+                s.tempo = t;
+                Ok(())
+            });
+        }
+        let mut num = ts.num;
+        ui.label("Meter");
+        if ui.add(egui::DragValue::new(&mut num).range(2..=12).suffix(format!("/{}", ts.den))).changed() {
+            let mut g = shared.lock_store();
+            let _ = g.mutate(|s| {
+                s.time_sig.num = num;
+                Ok(())
+            });
+        }
+        ui.separator();
+        ui.label("Style");
+        if !st.style_focused {
+            st.style_draft = style.clone();
+        }
+        let resp = ui.add(egui::TextEdit::singleline(&mut st.style_draft).desired_width(110.0 * st.ui_scale).hint_text("pop, lofi, kids…"));
+        st.style_focused = resp.has_focus();
+        if resp.lost_focus() && st.style_draft.trim() != style {
+            let new_style = st.style_draft.trim().to_string();
+            let mut g = shared.lock_store();
+            let _ = g.mutate(|s| {
+                s.style = new_style.clone();
+                Ok(())
+            });
+        }
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.menu_button("Settings", |ui| {
+                if !st.status.is_empty() { ui.label(&st.status); ui.separator(); }
+                theme::eyebrow(ui, "DISPLAY SIZE");
+            let sizes = [("S", 1.0f32), ("M", 1.25), ("L", 1.5), ("XL", 1.8), ("XXL", 2.2)];
+            let cur = sizes.iter().min_by(|a, b| (a.1 - st.ui_scale).abs().partial_cmp(&(b.1 - st.ui_scale).abs()).unwrap()).map(|s| s.0).unwrap_or("M");
+            egui::ComboBox::from_id_salt("ui-size").width(48.0 * st.ui_scale).selected_text(format!("A {cur}")).show_ui(ui, |ui| {
+                for (label, v) in sizes {
+                    if ui.selectable_label((v - st.ui_scale).abs() < 0.01, label).clicked() {
+                        st.ui_scale = v;
+                    }
+                }
+            });
+                ui.separator();
+                theme::eyebrow(ui, "MIDI OUTPUT");
+        // Which layer this plugin instance sends to its MIDI output (one instance per FL instrument).
+        let cur = st.params.output.value();
+        let (label, choices): (String, Vec<(i32, String)>) = {
+            let g = shared.lock_store();
+            let mut v: Vec<(i32, String)> = vec![(0, "All layers".into())];
+            let mut seen = std::collections::BTreeSet::new();
+            for t in &g.session.tracks {
+                if seen.insert(t.channel) {
+                    let names: Vec<&str> = g.session.tracks.iter().filter(|x| x.channel == t.channel).map(|x| x.name.as_str()).collect();
+                    v.push((t.channel as i32 + 1, format!("{} (ch {})", names.join(" + "), t.channel + 1)));
+                }
+            }
+            let label = v.iter().find(|(c, _)| *c == cur).map(|(_, l)| l.clone()).unwrap_or_else(|| format!("ch {cur}"));
+            (label, v)
+        };
+        ui.label("Send");
+        egui::ComboBox::from_id_salt("send-layer").width(150.0 * st.ui_scale).selected_text(label).show_ui(ui, |ui| {
+            for (c, l) in choices {
+                if ui.selectable_label(cur == c, l).clicked() {
+                    st.pending_output = Some(c);
+                }
+            }
+        }).response.on_hover_text("Which layer this plugin instance plays through its MIDI output. Add one Tonefold per instrument and pick that instrument's layer here.");
+        ui.separator();
+            });
+            ui.toggle_value(&mut st.show_arrangement, "Arrangement");
+            ui.toggle_value(&mut st.show_composer, "Composer");
+        });
+    });
+}
+
+fn sections_strip(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let (sections, selected) = {
+        let g = shared.lock_store();
+        let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+        (g.session.sections.clone(), ui_state.selected_section)
+    };
+    if selected.is_none() && !sections.is_empty() {
+        if let Ok(mut u) = shared.ui.lock() {
+            u.selected_section = Some(sections[0].id.clone());
+        }
+        shared.rebuild_playback();
+    }
+    let selected = selected.or_else(|| sections.first().map(|s| s.id.clone()));
+    let total_bars: u32 = sections.iter().map(|s| s.bars).sum::<u32>().max(1);
+    let playhead = shared.playhead_tick.load(Ordering::Relaxed);
+    let bar_ticks = shared.lock_store().session.bar_ticks();
+    theme::eyebrow(ui, "SONG STRUCTURE");
+    let avail = (ui.available_width() - 160.0 * st.ui_scale).max(100.0);
+    egui::ScrollArea::horizontal().id_salt("section-tabs").show(ui, |ui| {
+    ui.horizontal(|ui| {
+        let mut new_selection = None;
+        for sec in &sections {
+            let w = (avail * sec.bars as f32 / total_bars as f32).clamp(112.0 * st.ui_scale, 270.0 * st.ui_scale);
+            let is_sel = selected.as_deref() == Some(sec.id.as_str());
+            let start = shared.lock_store().session.section_start(&sec.id).unwrap_or(0);
+            let in_play = playhead >= start && playhead < start + sec.bars * bar_ticks && (shared.playing.load(Ordering::Relaxed) || shared.host_playing.load(Ordering::Relaxed));
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 52.0 * st.ui_scale), egui::Sense::click());
+            let fill = if is_sel { Color32::from_rgb(31, 61, 66) } else if resp.hovered() { Color32::from_rgb(39, 48, 60) } else { theme::SURFACE };
+            ui.painter().rect_filled(rect, 7.0, fill);
+            ui.painter().rect_stroke(rect, 7.0, egui::Stroke::new(1.0, if is_sel { theme::ACCENT } else { theme::BORDER }), egui::StrokeKind::Inside);
+            let text_x = rect.left() + 12.0 * st.ui_scale;
+            let mut title = egui::text::LayoutJob::simple(sec.name.clone(), egui::FontId::proportional(13.0 * st.ui_scale), theme::TEXT, w - 24.0 * st.ui_scale);
+            title.wrap.max_rows = 1;
+            title.wrap.break_anywhere = true;
+            let galley = ui.painter().layout_job(title);
+            ui.painter().with_clip_rect(rect).galley(egui::pos2(text_x, rect.top() + 9.0 * st.ui_scale), galley, theme::TEXT);
+            ui.painter().with_clip_rect(rect).text(egui::pos2(text_x, rect.top() + 32.0 * st.ui_scale), egui::Align2::LEFT_TOP, format!("{} bars  /  {}", sec.bars, sec.role.name()), egui::FontId::proportional(10.0 * st.ui_scale), if is_sel { theme::ACCENT } else { theme::MUTED });
+            if in_play {
+                let r = resp.rect;
+                let frac = (playhead - start) as f32 / (sec.bars * bar_ticks) as f32;
+                let x = r.left() + r.width() * frac;
+                ui.painter().line_segment([egui::pos2(x, r.top()), egui::pos2(x, r.bottom())], egui::Stroke::new(2.0, Color32::from_rgb(255, 230, 120)));
+            }
+            if resp.clicked() {
+                new_selection = Some(sec.id.clone());
+            }
+        }
+        if let Some(id) = new_selection {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.selected_section = Some(id);
+            }
+            shared.rebuild_playback();
+        }
+        if ui.button("+ Section").clicked() {
+            let mut g = shared.lock_store();
+            let n = g.session.sections.len();
+            let name = match n {
+                0 => "Verse".to_string(),
+                1 => "Chorus".to_string(),
+                _ => format!("Section {}", n + 1),
+            };
+            let _ = g.mutate(|s| {
+                let role = SectionRole::from_name(&name);
+                s.add_section(&name, 8, role.default_energy());
+                Ok(())
+            });
+        }
+    });
+    });
+    if let Some(id) = selected {
+        if let Some(sec) = sections.iter().find(|s| s.id == id) {
+            let (mut bars, mut energy, mut role) = (sec.bars, sec.energy, sec.role);
+            if !st.name_focused {
+                st.name_draft = sec.name.clone();
+            }
+            egui::CollapsingHeader::new("Section details").show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Section").weak());
+                let r1 = ui.add(egui::TextEdit::singleline(&mut st.name_draft).desired_width(120.0 * st.ui_scale));
+                st.name_focused = r1.has_focus();
+                let name = st.name_draft.trim().to_string();
+                let roles = [SectionRole::Intro, SectionRole::Verse, SectionRole::PreChorus, SectionRole::Chorus, SectionRole::Bridge, SectionRole::Break, SectionRole::Build, SectionRole::Drop, SectionRole::Outro, SectionRole::Other];
+                let mut role_changed = false;
+                egui::ComboBox::from_id_salt("sec-role").width(90.0 * st.ui_scale).selected_text(role.name()).show_ui(ui, |ui| {
+                    for r in roles {
+                        if ui.selectable_value(&mut role, r, r.name()).changed() {
+                            role_changed = true;
+                        }
+                    }
+                });
+                ui.label("bars");
+                let r2 = ui.add(egui::DragValue::new(&mut bars).range(1..=128));
+                ui.label("energy");
+                let r3 = ui.add(egui::Slider::new(&mut energy, 0.0..=1.0).show_value(false));
+                if (r1.lost_focus() && name != sec.name) || r2.changed() || role_changed || r3.drag_stopped() || (r3.changed() && !r3.dragged()) {
+                    let mut g = shared.lock_store();
+                    let _ = dispatch(&mut g, "set_section", &serde_json::json!({ "section": id, "name": name, "bars": bars, "energy": energy, "role": role.name() }));
+                }
+                let chords_text = {
+                    let g = shared.lock_store();
+                    tonefold_core::notation::format_chords(&sec.chords, &g.session.key, sec.bars, g.session.bar_ticks())
+                };
+                ui.label(RichText::new(chords_text).small().color(track_color(TrackRole::Chords)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("Delete").clicked() {
+                        let mut g = shared.lock_store();
+                        let _ = g.mutate(|s| {
+                            s.sections.retain(|x| x.id != id);
+                            for t in s.tracks.iter_mut() {
+                                t.clips.remove(&id);
+                                t.inactive.remove(&id);
+                            }
+                            Ok(())
+                        });
+                        if let Ok(mut u) = shared.ui.lock() {
+                            u.selected_section = None;
+                        }
+                    }
+                    if ui.small_button("Move right").clicked() {
+                        let mut g = shared.lock_store();
+                        let _ = g.mutate(|s| {
+                            if let Some(i) = s.sections.iter().position(|x| x.id == id) {
+                                if i + 1 < s.sections.len() {
+                                    s.sections.swap(i, i + 1);
+                                }
+                            }
+                            Ok(())
+                        });
+                    }
+                    if ui.small_button("Move left").clicked() {
+                        let mut g = shared.lock_store();
+                        let _ = g.mutate(|s| {
+                            if let Some(i) = s.sections.iter().position(|x| x.id == id) {
+                                if i > 0 {
+                                    s.sections.swap(i, i - 1);
+                                }
+                            }
+                            Ok(())
+                        });
+                    }
+                    if ui.small_button("duplicate").clicked() {
+                        let mut g = shared.lock_store();
+                        let new_name = format!("{} 2", sec.name);
+                        let _ = g.mutate(|s| {
+                            let new_id = s.add_section(&new_name, sec.bars, sec.energy);
+                            let src = s.section(&id).cloned().unwrap();
+                            s.section_mut(&new_id).unwrap().chords = src.chords.clone();
+                            s.section_mut(&new_id).unwrap().lyrics = src.lyrics.clone();
+                            s.section_mut(&new_id).unwrap().role = src.role;
+                            for t in s.tracks.iter_mut() {
+                                if let Some(c) = t.clips.get(&id).cloned() {
+                                    t.clips.insert(new_id.clone(), c);
+                                }
+                                if t.inactive.contains(&id) {
+                                    t.inactive.insert(new_id.clone());
+                                } else {
+                                    t.inactive.remove(&new_id);
+                                }
+                            }
+                            Ok(())
+                        });
+                    }
+                });
+            });
+            });
+        }
+    }
+}
+
+/// Layers × sections presence grid.
+fn arrangement_grid(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let session = shared.lock_store().session.clone();
+    if session.sections.is_empty() {
+        return;
+    }
+    let cell = 22.0 * st.ui_scale;
+    egui::Grid::new("arr-grid").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+        ui.label(RichText::new("layer \\ section").small().weak());
+        for sec in &session.sections {
+            ui.label(RichText::new(&sec.name).small());
+        }
+        ui.end_row();
+        for t in &session.tracks {
+            ui.label(RichText::new(&t.name).small().color(track_color(t.kind)));
+            for sec in &session.sections {
+                let active = t.active_in(&sec.id);
+                let has_notes = t.clips.get(&sec.id).map(|c| !c.notes.is_empty()).unwrap_or(false);
+                let fill = if !active { Color32::from_rgb(40, 40, 44) } else if has_notes { track_color(t.kind) } else { Color32::from_rgb(70, 74, 82) };
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell * 2.0, cell * 0.8), egui::Sense::click());
+                ui.painter().rect_filled(rect, 3.0, fill);
+                if resp.on_hover_text(if active { "playing (click to silence)" } else { "silent (click to enable)" }).clicked() {
+                    let mut g = shared.lock_store();
+                    let _ = dispatch(&mut g, "set_arrangement", &serde_json::json!({ "track": t.id, "section": sec.id, "active": !active }));
+                }
+            }
+            ui.end_row();
+        }
+    });
+}
+
+fn layers_panel(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    ui.heading("Layers");
+    theme::eyebrow(ui, "YOUR INSTRUMENTS");
+    ui.separator();
+    let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+    let tracks = shared.lock_store().session.tracks.clone();
+    let mut select: Option<(String, bool)> = None; // (id, additive)
+    let mut solo_changed = false;
+    let mut drag_request: Option<(String, bool)> = None;
+    ui.horizontal_wrapped(|ui| {
+        let mut solo = ui_state.solo_selected;
+        if ui.checkbox(&mut solo, "Solo selected").on_hover_text("Play only the selected layers (click = select one, Ctrl+click = add more). Off = play everything.").changed() {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.solo_selected = solo;
+            }
+            solo_changed = true;
+        }
+        if ui.small_button("All").on_hover_text("select every layer").clicked() {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.selected_tracks = tracks.iter().map(|t| t.id.clone()).collect();
+            }
+            solo_changed = true;
+        }
+    });
+    egui::ScrollArea::vertical().id_salt("layers-scroll").auto_shrink([false, false]).max_height((ui.available_height() - 120.0 * st.ui_scale).max(40.0)).show(ui, |ui| {
+        for t in &tracks {
+            let primary = ui_state.selected_track == t.id;
+            let color = track_color(t.kind);
+            let clip = ui_state.selected_section.as_ref().and_then(|id| t.clips.get(id));
+            let note_count = clip.map(|c| c.notes.len()).unwrap_or(0);
+            ui.push_id(&t.id, |ui| {
+                egui::Frame::new().fill(if primary { Color32::from_rgb(33, 48, 63) } else { theme::SURFACE })
+                    .stroke(egui::Stroke::new(1.0, if primary || ui_state.selected_tracks.contains(&t.id) { color } else { theme::BORDER }))
+                    .corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0 * st.ui_scale;
+                    ui.set_width(ui.available_width());
+                    let title = ui.add(egui::Button::new(RichText::new(&t.name).strong().color(color)).frame(false)
+                        .min_size(egui::vec2(ui.available_width(), 24.0 * st.ui_scale)));
+                    if title.clicked() {
+                        select = Some((t.id.clone(), ui.input(|i| i.modifiers.ctrl || i.modifiers.shift)));
+                    }
+                    ui.label(RichText::new(format!("MIDI {}   /   {} notes", t.channel + 1, note_count)).small().color(theme::MUTED));
+                    let (r, preview) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0 * st.ui_scale), egui::Sense::click());
+                    ui.painter().rect_filled(r, 4.0, theme::CANVAS);
+                    if preview.clicked() { select = Some((t.id.clone(), false)); }
+                    if note_count == 0 {
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "No notes in this section", egui::FontId::proportional(10.0 * st.ui_scale), theme::MUTED);
+                    }
+                    if let Some(clip) = clip {
+                        let end = clip.notes.iter().map(|n| n.end()).max().unwrap_or(1).max(1) as f32;
+                        let lo = clip.notes.iter().map(|n| n.pitch).min().unwrap_or(48) as f32;
+                        let hi = clip.notes.iter().map(|n| n.pitch).max().unwrap_or(72) as f32;
+                        for n in clip.notes.iter().take(256) {
+                            let x = r.left() + 4.0 + n.start as f32 / end * (r.width() - 8.0);
+                            let y = r.bottom() - 5.0 - (n.pitch as f32 - lo) / (hi - lo).max(1.0) * (r.height() - 10.0);
+                            let w = (n.len as f32 / end * (r.width() - 8.0)).max(2.0);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, 2.0)), 1.0, color);
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.selectable_label(t.muted, "Mute").clicked() {
+                            let _ = shared.lock_store().mutate(|s| { if let Some(tr) = s.track_by_mut(&t.id) { tr.muted = !tr.muted; } Ok(()) });
+                        }
+                        if ui.selectable_label(t.locked, "Lock").on_hover_text("Protect this layer from generation").clicked() {
+                            let _ = shared.lock_store().mutate(|s| { if let Some(tr) = s.track_by_mut(&t.id) { tr.locked = !tr.locked; } Ok(()) });
+                        }
+                        let handle = ui.add(egui::Button::new(RichText::new("MIDI").small().color(color)).sense(egui::Sense::drag()))
+                            .on_hover_text("Drag MIDI onto an FL Studio channel. Hold Shift for this section only.");
+                        if handle.drag_started() { drag_request = Some((t.id.clone(), ui.input(|i| i.modifiers.shift))); }
+                    });
+                });
+                ui.add_space(4.0);
+            });
+        }
+    });
+    if let Some((id, additive)) = select {
+        if let Ok(mut u) = shared.ui.lock() {
+            if additive {
+                if u.selected_tracks.contains(&id) && u.selected_tracks.len() > 1 && u.selected_track != id {
+                    u.selected_tracks.remove(&id);
+                } else {
+                    u.selected_tracks.insert(id.clone());
+                    u.selected_track = id;
+                }
+            } else {
+                u.selected_tracks.clear();
+                u.selected_tracks.insert(id.clone());
+                u.selected_track = id;
+            }
+        }
+        st.piano.selection.clear();
+        solo_changed = true;
+    }
+    if solo_changed {
+        shared.rebuild_playback();
+    }
+    if let Some((tid, section_only)) = drag_request {
+        start_layer_drag(shared, &tid, section_only);
+    }
+    ui.separator();
+    ui.horizontal_wrapped(|ui| {
+        egui::ComboBox::from_id_salt("add-kind").width(90.0 * st.ui_scale).selected_text(st.add_kind.label()).show_ui(ui, |ui| {
+            for k in TrackRole::ALL {
+                ui.selectable_value(&mut st.add_kind, k, k.label()).on_hover_text(k.description());
+            }
+        });
+        if ui.button("+ Layer").clicked() {
+            let added = {
+                let mut g = shared.lock_store();
+                dispatch(&mut g, "add_layer", &serde_json::json!({ "kind": st.add_kind.name() })).ok().and_then(|v| v["track"].as_str().map(str::to_string))
+            };
+            if let Some(id) = added {
+                if let Ok(mut u) = shared.ui.lock() {
+                    u.selected_track = id.clone();
+                    u.selected_tracks.clear();
+                    u.selected_tracks.insert(id);
+                }
+                shared.rebuild_playback();
+            }
+        }
+    });
+    if tracks.len() > 1 && ui.small_button("Remove selected layer").clicked() {
+        let mut g = shared.lock_store();
+        let _ = dispatch(&mut g, "remove_layer", &serde_json::json!({ "track": ui_state.selected_track }));
+    }
+}
+
+static PENDING_DRAG: Mutex<Option<(String, String, bool)>> = Mutex::new(None);
+
+/// Polled every frame: marks the layer written when a deferred drag ended in a drop.
+fn poll_drag_result(shared: &Shared) {
+    #[cfg(windows)]
+    if let Some((_path, dropped)) = crate::dragout::take_result() {
+        let pending = PENDING_DRAG.lock().ok().and_then(|mut p| p.take());
+        if let Some((id, name, section_only)) = pending {
+            if dropped {
+                if let Ok(mut u) = shared.ui.lock() {
+                    u.written.insert(id);
+                }
+                shared.push_chat(ChatRole::System, format!("{} written to FL Studio ({})", name, if section_only { "selected section" } else { "whole song" }));
+            } else {
+                shared.push_chat(ChatRole::System, format!("drag of {} cancelled", name));
+            }
+        }
+    }
+}
+
+/// Writes the layer to a temp .mid and starts an OS drag with it (Windows, deferred to a timer).
+fn start_layer_drag(shared: &Shared, track: &str, section_only: bool) {
+    let (session, section) = {
+        let g = shared.lock_store();
+        let ui = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+        (g.session.clone(), ui.selected_section)
+    };
+    let Some(t) = session.track_by(track).cloned() else { return };
+    let notes: Vec<Note> = if section_only {
+        section.as_deref().and_then(|s| session.clip(&t.id, s).map(|c| c.notes.clone())).unwrap_or_default()
+    } else {
+        session.flatten(&t.id)
+    };
+    if notes.is_empty() {
+        shared.push_chat(ChatRole::System, format!("{} has no notes to write", t.name));
+        return;
+    }
+    let dir = tonefold_core::midi::default_export_dir().join("drag");
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join(format!("{}{}.mid", t.id, if section_only { format!("-{}", section.clone().unwrap_or_default()) } else { String::new() }));
+    let automation = if section_only {
+        section.as_deref().and_then(|s| session.clip(&t.id, s).map(|c| c.automation.iter().flat_map(|a| a.points.iter().map(|p| (p.tick, a.target, p.value)).collect::<Vec<_>>()).collect::<Vec<_>>())).unwrap_or_default()
+    } else {
+        session.flatten_automation(&t.id)
+    };
+    let track_data = tonefold_core::midi::MidiTrack { name: &t.name, channel: t.channel, notes: &notes, automation: &automation, bend_range: t.bend_range };
+    if let Err(e) = tonefold_core::midi::write_smf(&file, session.tempo, (session.time_sig.num, session.time_sig.den), &[track_data]) {
+        shared.push_chat(ChatRole::System, format!("could not write {}: {e}", file.display()));
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let hwnd = egui_baseview::keyhook::active_hwnd();
+        if hwnd == 0 {
+            shared.push_chat(ChatRole::System, "drag: window handle unknown, click inside the plugin first".to_string());
+            return;
+        }
+        if let Ok(mut p) = PENDING_DRAG.lock() {
+            *p = Some((t.id.clone(), t.name.clone(), section_only));
+        }
+        crate::dragout::start_drag_deferred(hwnd, &file);
+    }
+    #[cfg(not(windows))]
+    {
+        shared.push_chat(ChatRole::System, format!("exported {} (drag-out is Windows only)", file.display()));
+    }
+}
+
+/// Folder chosen in the export dialog, waiting for the GUI thread to run the export.
+static EXPORT_PICK: Mutex<Option<(std::path::PathBuf, Option<String>)>> = Mutex::new(None);
+/// A folder dialog is already open (it runs on its own thread so it cannot block the GUI).
+static EXPORT_PICKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Folder of the last export; the dialog opens there and "Open folder" points at it.
+static LAST_EXPORT_DIR: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Project file chosen in a dialog, applied by the GUI thread: (path, save rather than open).
+static PROJECT_PICK: Mutex<Option<(std::path::PathBuf, bool)>> = Mutex::new(None);
+/// The project file the session came from / was last saved to.
+static PROJECT_PATH: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+const PROJECT_EXT: &str = "tonefold";
+
+fn project_path() -> Option<std::path::PathBuf> {
+    PROJECT_PATH.lock().ok().and_then(|p| p.clone())
+}
+
+fn set_project_path(path: Option<std::path::PathBuf>) {
+    if let Ok(mut p) = PROJECT_PATH.lock() {
+        *p = path.clone();
+    }
+    // Remembered so the standalone reopens the same song next time.
+    let note = tonefold_core::midi::default_export_dir().parent().map(|d| d.join("last-project.txt"));
+    if let Some(note) = note {
+        match path {
+            Some(p) => {
+                let _ = std::fs::create_dir_all(note.parent().unwrap_or(&note));
+                let _ = std::fs::write(&note, p.display().to_string());
+            }
+            None => {
+                let _ = std::fs::remove_file(&note);
+            }
+        }
+    }
+}
+
+/// Where the standalone keeps the live session, so nothing is lost when it is closed.
+fn autosave_path() -> Option<std::path::PathBuf> {
+    tonefold_core::midi::default_export_dir().parent().map(|d| d.join("autosave.tonefold"))
+}
+
+/// True when this is the standalone app rather than a plugin inside a DAW (which saves state itself).
+fn is_standalone() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+        .map(|n| n.contains("tonefold"))
+        .unwrap_or(false)
+}
+
+/// Asks for a project file on a worker thread; [`poll_project`] does the work.
+fn ask_project(save: bool) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("project: dialog already open");
+        return;
+    }
+    let start = project_path().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(last_export_dir);
+    let name = project_path()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| format!("song.{PROJECT_EXT}"));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(if save { "Save song as" } else { "Open song" })
+            .set_directory(&start)
+            .add_filter("Tonefold song", &[PROJECT_EXT])
+            .add_filter("All files", &["*"]);
+        if save {
+            dialog = dialog.set_file_name(&name);
+        }
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = if save { dialog.save_file() } else { dialog.pick_file() };
+        dbg_log(&format!("project: dialog returned {:?}", picked));
+        EXPORT_PICKING.store(false, Ordering::Release);
+        if let Some(mut path) = picked {
+            if save && path.extension().is_none() {
+                path.set_extension(PROJECT_EXT);
+            }
+            if let Ok(mut p) = PROJECT_PICK.lock() {
+                *p = Some((path, save));
+            }
+        }
+    });
+}
+
+/// Writes the whole session (song, chat, composer session) as one JSON file.
+fn save_project(shared: &Shared, st: &EditorState, path: &std::path::Path) -> Result<(), String> {
+    let mut p = shared.to_persisted();
+    p.ui_scale = Some(st.ui_scale);
+    p.backend = Some(st.backend());
+    let json = serde_json::to_string_pretty(&p).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Replaces the session with the one in `path`.
+fn open_project(shared: &Shared, st: &mut EditorState, path: &std::path::Path) -> Result<(), String> {
+    let json = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Accept a bare session too, so a file built by tonefold-cli (or another tool) opens here.
+    let v = if v.get("session").is_some() { v } else { serde_json::json!({ "session": v }) };
+    let p: Persisted = serde_json::from_value(v).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(sc) = p.ui_scale {
+        st.ui_scale = sc;
+    }
+    if let Some(b) = &p.backend {
+        st.adopt_backend(b);
+    }
+    shared.load_persisted(p);
+    adopt_session(shared, st);
+    Ok(())
+}
+
+/// Starts an empty song, keeping the composer connection.
+fn new_project(shared: &Shared, st: &mut EditorState) {
+    shared.load_persisted(Persisted { session: tonefold_core::Session::default(), ..Default::default() });
+    if let Ok(mut c) = shared.chat.lock() {
+        c.clear();
+    }
+    if let Ok(mut s) = shared.agent_sessions.lock() {
+        s.clear();
+    }
+    adopt_session(shared, st);
+    set_project_path(None);
+}
+
+/// Makes the session in `shared` the one the editor considers current: writes it straight into the
+/// persisted blob and records its hash. Without this, `sync_state`'s project-load detection sees the
+/// *previous* song still sitting in `state_json`, decides the host has loaded a project, and puts it
+/// back — so New and Open would both undo themselves on the next frame.
+fn adopt_session(shared: &Shared, st: &mut EditorState) {
+    st.piano.selection.clear();
+    st.takes.clear();
+    st.take_track = None;
+    let mut p = shared.to_persisted();
+    p.ui_scale = Some(st.ui_scale);
+    if let Ok(s) = serde_json::to_string(&p) {
+        st.last_loaded_hash = crate::hash_str(&s);
+        if let Ok(mut w) = st.params.state_json.write() {
+            w.clone_from(&s);
+        }
+        // The standalone reopens its autosave on launch, so that has to move now too — otherwise
+        // starting a new song and closing the app would bring the old one back.
+        if is_standalone() {
+            if let Some(path) = autosave_path() {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(path, &s);
+            }
+        }
+    }
+    st.last_persisted_revision = shared.lock_store().revision;
+    st.last_autosave = Some(std::time::Instant::now());
+}
+
+/// Applies a project file picked in the dialog thread.
+fn poll_project(st: &mut EditorState, shared: &Shared) {
+    let Some((path, save)) = PROJECT_PICK.lock().ok().and_then(|mut p| p.take()) else { return };
+    if save {
+        match save_project(shared, st, &path) {
+            Ok(()) => {
+                set_project_path(Some(path.clone()));
+                shared.push_chat(ChatRole::System, format!("saved {}", path.display()));
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("save failed: {e}")),
+        }
+    } else {
+        match open_project(shared, st, &path) {
+            Ok(()) => {
+                set_project_path(Some(path.clone()));
+                shared.push_chat(ChatRole::System, format!("opened {}", path.display()));
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("open failed: {e}")),
+        }
+    }
+}
+
+/// The plugin window, so the export dialog can be owned by it.
+#[cfg(windows)]
+struct ParentWindow(std::num::NonZeroIsize);
+
+#[cfg(windows)]
+impl raw_window_handle::HasWindowHandle for ParentWindow {
+    fn window_handle(&self) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let handle = raw_window_handle::Win32WindowHandle::new(self.0);
+        // SAFETY: the plugin window outlives the dialog; the editor tears the hook down on close.
+        unsafe { Ok(raw_window_handle::WindowHandle::borrow_raw(raw_window_handle::RawWindowHandle::Win32(handle))) }
+    }
+}
+
+#[cfg(windows)]
+impl raw_window_handle::HasDisplayHandle for ParentWindow {
+    fn display_handle(&self) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let handle = raw_window_handle::WindowsDisplayHandle::new();
+        // SAFETY: the Windows display handle carries no data.
+        unsafe { Ok(raw_window_handle::DisplayHandle::borrow_raw(raw_window_handle::RawDisplayHandle::Windows(handle))) }
+    }
+}
+
+/// Diagnostics to %LOCALAPPDATA%/Tonefold/keys.log (shared with the keyboard hook).
+fn dbg_log(msg: &str) {
+    #[cfg(windows)]
+    egui_baseview::keyhook::log(msg);
+    #[cfg(not(windows))]
+    let _ = msg;
+}
+
+fn last_export_dir() -> std::path::PathBuf {
+    LAST_EXPORT_DIR.lock().ok().and_then(|d| d.clone()).unwrap_or_else(tonefold_core::midi::default_export_dir)
+}
+
+/// Asks for a destination folder on a worker thread (a modal dialog on the GUI thread would re-enter
+/// the window handler). [`poll_export`] runs the export once a folder comes back.
+fn ask_export_dir(section: Option<String>) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("export: dialog already open");
+        return;
+    }
+    let start = last_export_dir();
+    dbg_log(&format!("export: opening folder dialog at {}", start.display()));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(if section.is_some() { "Export section to folder" } else { "Export song to folder" })
+            .set_directory(&start);
+        // Own the dialog by the plugin window, or it can open behind an always-on-top plugin window.
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = dialog.pick_folder();
+        dbg_log(&format!("export: dialog returned {:?}", picked));
+        if let Some(dir) = picked {
+            if let Ok(mut p) = EXPORT_PICK.lock() {
+                *p = Some((dir, section));
+            }
+        }
+        EXPORT_PICKING.store(false, Ordering::Release);
+    });
+}
+
+/// Asks for a folder, then renders the mix and one .wav per layer into it. Both run on a worker
+/// thread: the dialog must not re-enter the GUI, and a song with several layers takes a moment.
+fn ask_export_wav(section: Option<String>) {
+    if EXPORT_PICKING.swap(true, Ordering::AcqRel) {
+        dbg_log("export: dialog already open");
+        return;
+    }
+    let start = last_export_dir();
+    dbg_log(&format!("export: opening wav dialog at {}", start.display()));
+    #[cfg(windows)]
+    let parent = std::num::NonZeroIsize::new(egui_baseview::keyhook::active_hwnd()).map(ParentWindow);
+    std::thread::spawn(move || {
+        let _ = std::fs::create_dir_all(&start);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Export audio to folder (mix + one .wav per layer)")
+            .set_directory(&start);
+        #[cfg(windows)]
+        if let Some(parent) = &parent {
+            dialog = dialog.set_parent(parent);
+        }
+        let picked = dialog.pick_folder();
+        dbg_log(&format!("export: wav dialog returned {:?}", picked));
+        EXPORT_PICKING.store(false, Ordering::Release);
+        let Some(dir) = picked else { return };
+        let shared = crate::state::global_shared();
+        shared.push_chat(ChatRole::System, format!("rendering audio to {}…", dir.display()));
+        match crate::wav::render_to_dir(&shared, section.as_deref(), &dir) {
+            Ok(r) => {
+                if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
+                    *d = Some(dir.clone());
+                }
+                let limited = if r.peak > 0.99 { format!(", turned down {:.1} dB to fit", 20.0 * (0.99 / r.peak).log10()) } else { String::new() };
+                let names: Vec<&str> = r.files.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect();
+                shared.push_chat(
+                    ChatRole::System,
+                    format!("wrote {} files to {} ({:.1}s each{limited}): {}", r.files.len(), dir.display(), r.seconds, names.join(", ")),
+                );
+            }
+            Err(e) => shared.push_chat(ChatRole::System, format!("render failed: {e}")),
+        }
+    });
+}
+
+/// Runs a pending export once the dialog thread has produced a folder.
+fn poll_export(shared: &Shared) {
+    let Some((dir, section)) = EXPORT_PICK.lock().ok().and_then(|mut p| p.take()) else { return };
+    let params = |d: &std::path::Path| match &section {
+        Some(s) => serde_json::json!({ "dir": d.display().to_string(), "section": s }),
+        None => serde_json::json!({ "dir": d.display().to_string() }),
+    };
+    let res = {
+        let mut g = shared.lock_store();
+        dispatch(&mut g, "export", &params(&dir))
+    };
+    match res {
+        Ok(v) => {
+            if let Ok(mut d) = LAST_EXPORT_DIR.lock() {
+                *d = Some(dir.clone());
+            }
+            // Keep the default folder in step so the Tonefold Import piano-roll script sees this take.
+            let default_dir = tonefold_core::midi::default_export_dir();
+            if default_dir != dir {
+                let mut g = shared.lock_store();
+                let _ = dispatch(&mut g, "export", &params(&default_dir));
+            }
+            let n = v["files"].as_array().map(|a| a.len()).unwrap_or(0);
+            shared.push_chat(ChatRole::System, format!("exported {n} files to {}. In FL: piano roll > Tools > Scripts > Tonefold Import, or drag a .mid onto a Channel Rack slot.", dir.display()));
+        }
+        Err(e) => shared.push_chat(ChatRole::System, format!("export failed: {e}")),
+    }
+}
+
+fn transport(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+    ui.horizontal_wrapped(|ui| {
+        let playing = shared.playing.load(Ordering::Relaxed);
+        let sync = shared.sync_to_host.load(Ordering::Relaxed);
+        if ui.add_enabled(!sync, egui::Button::new(RichText::new(if playing { "Stop" } else { "Play" }).strong().color(theme::CANVAS)).fill(theme::ACCENT).min_size(egui::vec2(70.0 * st.ui_scale, 24.0 * st.ui_scale))).clicked() {
+            if playing {
+                shared.playing.store(false, Ordering::Relaxed);
+                shared.request_panic();
+            } else {
+                // Start where the playhead is (dragged on the piano roll ruler), else from the top.
+                let buf = shared.playback.load();
+                let ph = shared.playhead_tick.load(Ordering::Relaxed);
+                let from = if (buf.loop_start..buf.loop_end).contains(&ph) { ph } else { buf.loop_start };
+                shared.seek_to(from);
+                shared.playing.store(true, Ordering::Relaxed);
+            }
+        }
+        let mut s = sync;
+        if ui.checkbox(&mut s, "Sync to host").on_hover_text("Follow FL Studio's transport and position").changed() {
+            shared.sync_to_host.store(s, Ordering::Relaxed);
+            shared.playing.store(false, Ordering::Relaxed);
+            shared.request_panic();
+        }
+        let mut loop_sec = ui_state.loop_section;
+        if ui.checkbox(&mut loop_sec, "Loop section").on_hover_text("Loop only the selected section (else the whole song)").changed() {
+            if let Ok(mut u) = shared.ui.lock() {
+                u.loop_section = loop_sec;
+            }
+            shared.rebuild_playback();
+        }
+        let ph = shared.playhead_tick.load(Ordering::Relaxed);
+        let bar = shared.lock_store().session.bar_ticks().max(1);
+        ui.label(RichText::new(format!("{}.{}", ph / bar + 1, (ph % bar) / tonefold_core::PPQ + 1)).monospace());
+        if ui.small_button("Panic").clicked() {
+            shared.request_panic();
+        }
+        ui.separator();
+        let mut sound = st.params.sound.value();
+        if ui.checkbox(&mut sound, "Built-in sound").on_hover_text("Play the song through Tonefold's own General MIDI sounds (no routing needed). Untick when you route layers to FL instruments instead.").changed() {
+            st.pending_sound = Some(sound);
+        }
+        let mut db = nih_plug::util::gain_to_db(st.params.sound_gain.value());
+        if ui.add(egui::Slider::new(&mut db, -30.0..=6.0).show_value(false).suffix(" dB")).on_hover_text(format!("volume {db:.0} dB")).changed() {
+            st.pending_gain = Some(nih_plug::util::db_to_gain(db));
+        }
+        ui.label(RichText::new("Sound engine").small().color(theme::MUTED)).on_hover_text(shared.soundfont_status.lock().map(|s| s.clone()).unwrap_or_default());
+        ui.separator();
+        let (can_undo, can_redo) = {
+            let g = shared.lock_store();
+            (!g.history.is_empty(), !g.redo.is_empty())
+        };
+        if ui.add_enabled(can_undo, egui::Button::new("Undo")).clicked() {
+            shared.lock_store().undo();
+        }
+        if ui.add_enabled(can_redo, egui::Button::new("Redo")).clicked() {
+            shared.lock_store().redo();
+        }
+        ui.separator();
+        let sec = ui_state.selected_section.clone();
+        ui.menu_button("Export…", |ui| {
+            ui.label(RichText::new("MIDI — for FL Studio").small().weak());
+            if ui.button("Whole song…").on_hover_text("Pick a folder; writes latest.json/.mid plus one .mid per layer").clicked() {
+                ask_export_dir(None);
+                ui.close_menu();
+            }
+            let section_label = sec.clone().unwrap_or_else(|| "section".into());
+            if ui.add_enabled(sec.is_some(), egui::Button::new(format!("This section ({section_label})…"))).clicked() {
+                ask_export_dir(sec.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+            ui.label(RichText::new("Audio — built-in sounds").small().weak());
+            if ui.button("Whole song + one .wav per layer…").on_hover_text("Renders a stereo mix plus a stem for every layer into the folder you pick").clicked() {
+                ask_export_wav(None);
+                ui.close_menu();
+            }
+            if ui.add_enabled(sec.is_some(), egui::Button::new(format!("This section ({section_label}) + layers…"))).clicked() {
+                ask_export_wav(sec.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Open last export folder").clicked() {
+                let dir = last_export_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                ui.close_menu();
+            }
+        });
+    });
+}
+
+fn generation_bar(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
+    let ui_state = shared.ui.lock().map(|u| u.clone()).unwrap_or_default();
+    ui.horizontal_wrapped(|ui| {
+        let sec = ui_state.selected_section.clone();
+        let (track_name, locked, kind) = {
+            let g = shared.lock_store();
+            g.session.track_by(&ui_state.selected_track).map(|t| (t.name.clone(), t.locked, t.kind)).unwrap_or(("?".into(), true, TrackRole::Melody))
+        };
+        let hint = match kind {
+            TrackRole::Melody => "3 melody takes over the current chords (or free if none)",
+            TrackRole::Chords => "3 progressions fitted to the melody (or idiomatic ones if no melody)",
+            TrackRole::Bass => "3 bass lines following the chords and leaving room for the melody",
+            TrackRole::Arpeggio => "3 arp patterns over the chords",
+            TrackRole::Harmony => "3 harmony intervals under the lead",
+            TrackRole::Percussion => "3 percussion setups",
+            _ => "3 takes at different densities",
+        };
+        let btn = egui::Button::new(RichText::new(format!("Suggest {track_name}")).strong().color(theme::CANVAS)).fill(track_color(kind));
+        if ui.add_enabled(sec.is_some() && !locked, btn).on_hover_text(format!("Rule engine: {hint}")).clicked() {
+            let tid = ui_state.selected_track.clone();
+            st.suggest(shared, &tid, sec.as_deref().unwrap());
+        }
+        let ask = egui::Button::new(RichText::new("Ask AI").strong().color(theme::ACCENT)).fill(theme::SURFACE);
+        if ui
+            .add_enabled(sec.is_some() && !locked && !st.turn_active, ask)
+            .on_hover_text(format!(
+                "The composer writes {track_name} for this section, choosing the approach from the style and the other layers — \
+                 where Suggest reseeds the rule engine. Slower, and it explains itself in the chat."
+            ))
+            .clicked()
+        {
+            let tid = ui_state.selected_track.clone();
+            st.ask_composer_for_layer(shared, &tid, sec.as_deref().unwrap());
+        }
+        if !st.takes.is_empty() && st.take_track.as_deref() == Some(ui_state.selected_track.as_str()) && sec.as_deref() == Some(st.take_section.as_str()) {
+            ui.label(RichText::new("takes:").weak());
+            for i in 0..st.takes.len() {
+                let label = format!("{} - {}", i + 1, st.takes[i].label);
+                if ui.add(egui::SelectableLabel::new(st.take_idx == i, label)).clicked() && st.take_idx != i {
+                    st.apply_take(shared, i);
+                }
+            }
+            if ui.small_button("More").on_hover_text("three new takes").clicked() {
+                let tid = st.take_track.clone().unwrap();
+                st.suggest(shared, &tid, sec.as_deref().unwrap());
+            }
+            if ui.small_button("Keep").on_hover_text("lock this layer so later suggestions leave it alone").clicked() {
+                let tid = st.take_track.clone().unwrap();
+                let mut g = shared.lock_store();
+                let _ = g.mutate(|s| {
+                    if let Some(t) = s.track_by_mut(&tid) {
+                        t.locked = true;
+                    }
+                    Ok(())
+                });
+                st.takes.clear();
+                st.take_track = None;
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(sec.is_some(), egui::Button::new("Generate section")).on_hover_text("Rule engine: every unlocked, active layer of the selected section").clicked() {
+            let mut g = shared.lock_store();
+            let seed = g.session.seed.wrapping_add(g.revision);
+            if let Err(e) = dispatch(&mut g, "generate_all", &serde_json::json!({ "section": sec.clone().unwrap(), "params": { "seed": seed } })) {
+                shared.push_chat(ChatRole::System, format!("generate: {e}"));
+            }
+        }
+        if ui.button("Generate song").on_hover_text("Every section, every unlocked layer, with continuity and section contrast").clicked() {
+            let mut g = shared.lock_store();
+            let seed = g.session.seed.wrapping_add(g.revision);
+            if let Err(e) = dispatch(&mut g, "generate_song", &serde_json::json!({ "params": { "seed": seed } })) {
+                shared.push_chat(ChatRole::System, format!("generate song: {e}"));
+            }
+        }
+    });
+}
+
+/// A proposed plan, written the way the producer would say it: the record first, then the steps
+/// with what each one will touch. Rendered in the transcript, where there is room to read it.
+fn plan_markdown(plan: &tonefold_ipc::Plan) -> String {
+    let mut out = String::from("**Plan**");
+    if plan.revision > 1 {
+        out.push_str(&format!(" (revision {})", plan.revision));
+    }
+    let mut facts: Vec<String> = Vec::new();
+    if let Some(k) = &plan.key { facts.push(k.clone()); }
+    if let Some(t) = plan.tempo { facts.push(format!("{t:.0} BPM")); }
+    if let Some(ts) = &plan.time_signature { facts.push(ts.clone()); }
+    if let Some(st) = &plan.style { facts.push(st.clone()); }
+    if !facts.is_empty() {
+        out.push_str(&format!(" — {}", facts.join(" · ")));
+    }
+    out.push_str("\n\n");
+    if !plan.summary.is_empty() {
+        out.push_str(&plan.summary);
+        out.push_str("\n\n");
+    }
+    if !plan.form.is_empty() {
+        out.push_str(&format!("**Form:** {}\n\n", plan.form.iter().map(|s| format!("{} x{}", s.name, s.bars)).collect::<Vec<_>>().join(" - ")));
+    }
+    for (i, step) in plan.steps.iter().enumerate() {
+        out.push_str(&format!("{}. **{}**", i + 1, step.title));
+        if !step.targets.is_empty() {
+            out.push_str(&format!(" — `{}`", step.targets.join("`, `")));
+        }
+        out.push('\n');
+        if !step.detail.is_empty() {
+            out.push_str(&format!("    {}\n", step.detail));
+        }
+    }
+    for risk in &plan.risks {
+        out.push_str(&format!("\n> {risk}\n"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::*;
+
+    #[test]
+    fn composer_input_remains_visible_with_long_transcript() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Tonefold::default().params.clone());
+            st.ui_scale = scale;
+            let shared = Shared::new(tonefold_core::Session::default());
+            for _ in 0..40 {
+                shared.push_chat(ChatRole::User, "Please develop the melody in this section.");
+            }
+            // Panels need a warm-up frame to settle their dimensions.
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                let send = output.shapes.iter().find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Send request" => Some(text),
+                    _ => None,
+                }).expect("send button should be rendered");
+                assert!(send.pos.y >= 0.0 && send.pos.y + send.galley.size().y <= 620.0,
+                    "input must remain visible at scale {scale}");
+            }
+        }
+    }
+
+    /// A twelve-step plan must not push the answer buttons — or the input — off the panel: an
+    /// unanswerable plan wedges the whole turn.
+    #[test]
+    fn a_long_plan_stays_answerable() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Tonefold::default().params.clone());
+            st.ui_scale = scale;
+            st.mode = "producer".into();
+            st.turn_active = true;
+            st.phase = "awaiting_approval".into();
+            let shared = Shared::new(tonefold_core::Session::default());
+            let plan = tonefold_ipc::Plan {
+                summary: "A 16-bar lo-fi sketch with an intro and a verse, groove-led.".into(),
+                key: Some("F minor".into()),
+                tempo: Some(82.0),
+                steps: (1..=12)
+                    .map(|i| tonefold_ipc::PlanStep {
+                        id: format!("s{i}"),
+                        owner: "rhythm-section".into(),
+                        title: format!("Step {i}: write something musical"),
+                        detail: "One or two sentences about what this step does and why it comes here.".into(),
+                        targets: vec!["drums@verse".into(), "bass@verse".into()],
+                    })
+                    .collect(),
+                revision: 2,
+                ..Default::default()
+            };
+            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "awaiting_approval".into(), checkpoint: None });
+
+            let mut seen = Vec::new();
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                seen = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos.y, text.galley.size().y)),
+                    _ => None,
+                }).collect();
+            }
+            // The note box has to stay reachable too — "Revise" without somewhere to type is a
+            // dead end.
+            for label in ["Approve", "Revise", "Stop", "Type what to change, then Revise above..."] {
+                let (_, y, h) = seen.iter().find(|(t, ..)| t == label)
+                    .unwrap_or_else(|| panic!("{label} should be rendered at scale {scale}"));
+                assert!(*y >= 0.0 && y + h <= 620.0, "{label} must stay on screen at scale {scale}");
+            }
+        }
+    }
+
+    /// While the run goes, the checklist shares the panel with the input. A long one must scroll or
+    /// truncate, never push the writing surface off screen.
+    #[test]
+    fn a_running_checklist_leaves_the_input_reachable() {
+        for scale in [1.0, 1.5, 2.2] {
+            let ctx = egui::Context::default();
+            apply_ui_scale(&ctx, scale);
+            let mut st = initial_state(crate::Tonefold::default().params.clone());
+            st.ui_scale = scale;
+            st.mode = "producer".into();
+            st.turn_active = true;
+            st.phase = "executing".into();
+            let shared = Shared::new(tonefold_core::Session::default());
+            let plan = tonefold_ipc::Plan { summary: "Building it".into(), steps: vec![Default::default(); 10], ..Default::default() };
+            *shared.plan.lock().unwrap() = Some(crate::state::PlanState { id: "p1".into(), plan, status: "executing".into(), checkpoint: Some("cp0".into()) });
+            *shared.todos.lock().unwrap() = (1..=10)
+                .map(|i| tonefold_ipc::TodoItem {
+                    content: format!("Step {i}: something with a reasonably long description"),
+                    status: if i < 4 { "completed" } else if i == 4 { "in_progress" } else { "pending" }.into(),
+                })
+                .collect();
+
+            let mut seen: Vec<(String, f32, f32)> = Vec::new();
+            for frame in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 620.0))),
+                    ..Default::default()
+                }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| chat::show(ui, &mut st, &shared));
+                });
+                if frame < 2 { continue; }
+                seen = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos.y, text.galley.size().y)),
+                    _ => None,
+                }).collect();
+            }
+            let hint = seen.iter().find(|(t, ..)| t.starts_with("Describe a melody"))
+                .unwrap_or_else(|| panic!("the input should be rendered at scale {scale}"));
+            assert!(hint.1 + hint.2 <= 620.0, "the input must stay on screen at scale {scale}");
+            assert!(seen.iter().any(|(t, ..)| t.contains("3/10 steps")), "progress should be visible at scale {scale}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod visual_preview {
+    use super::*;
+
+    /// Exports actual tessellated UI geometry for scripts/render_ui_preview.py.
+    #[test]
+    #[ignore = "manual visual QA artifact"]
+    fn export_editor_preview() {
+        let ctx = egui::Context::default();
+        let mut st = initial_state(crate::Tonefold::default().params.clone());
+        st.ui_scale = 1.5;
+        apply_ui_scale(&ctx, st.ui_scale);
+        let shared = Shared::new(tonefold_core::Session::default());
+        {
+            let mut g = shared.lock_store();
+            g.session.key = Key::new(5, ScaleKind::Major);
+            g.session.tempo = 112.0;
+            g.session.style = "kids".into();
+            let mut first = None;
+            for (name, bars, energy) in [("Intro", 4, 0.3), ("Verse Cow", 16, 0.55), ("Verse Pig", 16, 0.65), ("Verse Duck", 16, 0.85), ("Outro", 4, 0.3)] {
+                let id = g.session.add_section(name, bars, energy);
+                if first.is_none() { first = Some(id.clone()); }
+                let key = g.session.key;
+                let ticks = g.session.bar_ticks();
+                g.session.section_mut(&id).unwrap().chords = tonefold_core::notation::parse_chords("F | Bb | C | F", &key, bars, ticks).unwrap();
+            }
+            let _ = dispatch(&mut g, "generate_song", &serde_json::json!({"params":{"seed":42}}));
+            let mut u = shared.ui.lock().unwrap();
+            u.selected_section = first;
+            u.selected_track = "chords".into();
+        }
+        shared.push_chat(ChatRole::User, "Create Old MacDonald Had a Farm, with a different animal in each verse.");
+        for _ in 0..24 { shared.push_chat(ChatRole::Tool, "generate_section: arranged chords, melody, bass and drums"); }
+        shared.push_chat(ChatRole::Assistant, "### Your farmyard song is ready
+
+I built a playful arrangement in **F major at 112 BPM**, with a familiar melody and a little more energy in each verse.
+
+- **Intro** sets up the tune
+- **Three verses** leave room for the animal sounds
+- **Outro** brings everyone home
+
+Press **Play** to hear it. Select a layer to explore its notes, or tell me what you would like to change.");
+        let mut textures = Vec::new();
+        for frame in 0..4 {
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(2048.0, 1190.0))),
+                ..Default::default()
+            }, |ctx| draw(ctx, &mut st, &shared));
+            for (_, delta) in &output.textures_delta.set {
+                let (size, pixels): (_, Vec<[u8; 4]>) = match &delta.image {
+                    egui::ImageData::Color(img) => (img.size, img.pixels.iter().map(|p| p.to_array()).collect()),
+                    egui::ImageData::Font(img) => (img.size, img.srgba_pixels(None).map(|p| p.to_array()).collect()),
+                };
+                textures.push(serde_json::json!({"pos":delta.pos,"size":size,"pixels":pixels}));
+            }
+            if frame == 3 {
+                let meshes: Vec<_> = ctx.tessellate(output.shapes, output.pixels_per_point).into_iter().filter_map(|p| {
+                    let egui::epaint::Primitive::Mesh(mesh) = p.primitive else { return None };
+                    let vertices: Vec<_> = mesh.vertices.iter().map(|v| serde_json::json!([v.pos.x,v.pos.y,v.uv.x,v.uv.y,v.color.to_array()])).collect();
+                    Some(serde_json::json!({"clip":[p.clip_rect.min.x,p.clip_rect.min.y,p.clip_rect.max.x,p.clip_rect.max.y],"vertices":vertices,"indices":mesh.indices}))
+                }).collect();
+                let path = std::path::Path::new("../../target/ui-preview.json");
+                std::fs::write(path, serde_json::to_vec(&serde_json::json!({"size":[2048,1190],"textures":textures,"meshes":meshes})).unwrap()).unwrap();
+            }
+        }
+    }
+}
+
+
+

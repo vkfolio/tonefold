@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tonefold</title>
+<meta name="description" content="Tonefold is an open-source AI music composer app. Describe a song to Claude and get chords, melody, bass and drums in a piano roll you can edit, play and export. Optional CLAP/VST3 plugin for your DAW.">
+<meta property="og:title" content="Tonefold — an AI composer you can edit">
+<meta property="og:description" content="Describe a song. Get every part in a piano roll you can edit, hear and export. Free and open source.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single 1120px column ruled like the editor's piano roll — faint bar lines behind the
+   hero, content in a 12-column grid that stacks to one column on phones. Dark-first, like the app. */
+:root {
+  --bg: #10151C;
+  --panel: #161C25;
+  --surface: #1E2631;
+  --line: #2F3B49;
+  --fg: #E5EBF3;
+  --muted: #92A4B7;
+  --accent: #74DDC4;
+  --accent-ink: #0C1A17;
+  --accent-text: #74DDC4;
+  --lane-chords: #7FA8F5;
+  --lane-melody: #74DDC4;
+  --lane-bass: #F2C26B;
+  --lane-drums: #F28FA0;
+  --grid-bar: rgba(146, 164, 183, .16);
+  --grid-beat: rgba(146, 164, 183, .07);
+  --shadow: 0 30px 80px -30px rgba(0, 0, 0, .6);
+  --font-display: "Unbounded", "Arial Black", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --radius: 10px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #F2F5F8; --panel: #FFFFFF; --surface: #E6ECF2; --line: #C9D3DE;
+    --fg: #131A23; --muted: #4C5D6F; --accent: #74DDC4; --accent-ink: #0C1A17; --accent-text: #0F7A62;
+    --lane-chords: #3F6FD8; --lane-melody: #129C7C; --lane-bass: #C98A12; --lane-drums: #D2506A;
+    --grid-bar: rgba(19, 26, 35, .13); --grid-beat: rgba(19, 26, 35, .05);
+    --shadow: 0 30px 70px -35px rgba(19, 26, 35, .35);
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #F2F5F8; --panel: #FFFFFF; --surface: #E6ECF2; --line: #C9D3DE;
+  --fg: #131A23; --muted: #4C5D6F; --accent: #74DDC4; --accent-ink: #0C1A17; --accent-text: #0F7A62;
+  --lane-chords: #3F6FD8; --lane-melody: #129C7C; --lane-bass: #C98A12; --lane-drums: #D2506A;
+  --grid-bar: rgba(19, 26, 35, .13); --grid-beat: rgba(19, 26, 35, .05);
+  --shadow: 0 30px 70px -35px rgba(19, 26, 35, .35);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 1.0625rem/1.6 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+img { max-width: 100%; display: block; }
+a { color: var(--accent-text); text-underline-offset: 3px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+code, kbd, .mono { font-family: var(--font-mono); font-size: .9em; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: max(16px, 4vw); }
+
+/* nav */
+.nav {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.nav .wrap { display: flex; min-width: 0; align-items: center; gap: 24px; min-height: 60px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); text-decoration: none; font: 700 1.05rem var(--font-display); letter-spacing: -.01em; }
+.brand img { width: 28px; height: 28px; }
+.nav ul { display: flex; gap: 22px; list-style: none; margin: 0 0 0 auto; padding: 0; flex-wrap: wrap; }
+.nav ul a { color: var(--muted); text-decoration: none; font-size: .95rem; }
+.nav ul a:hover { color: var(--fg); }
+@media (max-width: 720px) { .nav ul { display: none; } .nav .btn { margin-left: auto; } }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 18px; border-radius: 8px;
+  font: 600 .95rem var(--font-body); text-decoration: none; cursor: pointer;
+  border: 1px solid transparent; transition: transform .15s ease, background .15s ease;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
+.btn-ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+.btn-ghost:hover { background: var(--surface); }
+.btn-sm { padding: 8px 14px; font-size: .88rem; }
+
+/* hero */
+.hero { position: relative; padding-block: clamp(48px, 8vw, 96px) 56px; overflow: hidden; }
+.hero::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid-bar) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-beat) 1px, transparent 1px);
+  background-size: 192px 100%, 48px 100%;
+  mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
+}
+.hero .wrap { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: clamp(32px, 5vw, 64px); align-items: center; }
+@media (max-width: 920px) { .hero .wrap { grid-template-columns: minmax(0, 1fr); } }
+.hero-copy { display: grid; gap: 22px; min-width: 0; }
+.eyebrow { font: 500 .78rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent-text); }
+.hero h1 { font: 700 clamp(2.1rem, 4.6vw, 3.5rem)/1.08 var(--font-display); letter-spacing: -.025em; }
+.hero h1 em { font-style: normal; color: var(--accent-text); }
+.lede { color: var(--muted); font-size: 1.15rem; max-width: 34em; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; }
+.meta { display: flex; gap: 8px 18px; flex-wrap: wrap; color: var(--muted); font: 400 .85rem var(--font-mono); }
+
+/* the sketch: chat + piano roll */
+.sketch {
+  min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.chat { display: grid; gap: 10px; padding: 16px 16px 14px; border-bottom: 1px solid var(--line); }
+.msg { max-width: 88%; padding: 9px 13px; border-radius: 12px; font-size: .93rem; line-height: 1.45; }
+.msg.you { justify-self: end; background: var(--surface); border-bottom-right-radius: 4px; }
+.msg.tf { justify-self: start; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.tf b { color: var(--accent-text); font-weight: 600; }
+.roll-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.roll-head .mono { color: var(--muted); font-size: .78rem; }
+.play {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
+  background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 999px;
+  padding: 6px 14px 6px 10px; font: 600 .85rem var(--font-body); cursor: pointer;
+}
+.play svg { width: 16px; height: 16px; }
+.roll { display: grid; grid-template-columns: 72px 1fr; }
+.lane-name {
+  display: flex; align-items: center; padding-left: 10px; font: 500 .7rem var(--font-mono);
+  color: var(--muted); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
+  text-transform: lowercase;
+}
+.lane-name::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 2px; margin-right: 7px; background: var(--c); }
+.lane {
+  position: relative; height: 62px; border-bottom: 1px solid var(--line);
+  background-image:
+    linear-gradient(to right, var(--grid-bar) 1px, transparent 1px),
+    linear-gradient(to right, var(--grid-beat) 1px, transparent 1px);
+  background-size: 25% 100%, 6.25% 100%;
+}
+.lane:last-of-type, .lane-name:nth-last-child(2) { border-bottom: 0; }
+.note {
+  position: absolute; border-radius: 3px; background: var(--c);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, black);
+  transition: filter .1s ease;
+}
+.note.on { filter: brightness(1.35) saturate(1.1); }
+.ruler { display: grid; grid-template-columns: 72px repeat(4, 1fr); font: 400 .7rem var(--font-mono); color: var(--muted); border-bottom: 1px solid var(--line); }
+.ruler span { padding: 4px 6px; }
+.ruler span:first-child { border-right: 1px solid var(--line); }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg); opacity: .85; pointer-events: none; left: 0; }
+.roll-body { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: 72px 1fr; }
+.roll-body .ph-track { position: absolute; left: 72px; right: 0; top: 0; bottom: 0; pointer-events: none; }
+
+/* sections */
+section { padding-block: clamp(56px, 8vw, 96px); }
+.section-head { display: grid; gap: 12px; max-width: 44rem; margin-bottom: 40px; }
+.section-head h2, .h2 { font: 700 clamp(1.6rem, 3vw, 2.3rem)/1.15 var(--font-display); letter-spacing: -.02em; }
+.section-head p { color: var(--muted); font-size: 1.08rem; }
+.rule { border-top: 1px solid var(--line); }
+
+.shot { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); background: var(--panel); }
+.shot figcaption { padding: 10px 14px; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); }
+figure { margin: 0; }
+
+.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 36px 32px; }
+@media (max-width: 900px) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .features { grid-template-columns: minmax(0, 1fr); } }
+.feature { display: grid; gap: 8px; align-content: start; padding-top: 18px; border-top: 2px solid var(--line); min-width: 0; }
+.feature .tag { font: 500 .75rem var(--font-mono); color: var(--accent-text); }
+.feature h3 { font: 600 1.12rem/1.3 var(--font-body); }
+.feature p { color: var(--muted); font-size: .98rem; }
+
+/* producer */
+.producer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); align-items: start; }
+@media (max-width: 880px) { .producer { grid-template-columns: minmax(0, 1fr); } }
+.plan { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+.plan-top { padding: 14px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
+.plan-top strong { font-weight: 600; }
+.plan-top span { color: var(--muted); font: 400 .8rem var(--font-mono); }
+.plan ol { list-style: none; margin: 0; padding: 6px 0; counter-reset: step; }
+.plan li { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: baseline; padding: 9px 16px; counter-increment: step; }
+.plan li::before { content: counter(step); font: 500 .78rem var(--font-mono); color: var(--muted); }
+.plan li code { color: var(--accent-text); background: var(--surface); padding: 1px 6px; border-radius: 4px; font-size: .8rem; white-space: nowrap; }
+.plan li .who { font: 400 .75rem var(--font-mono); color: var(--muted); white-space: nowrap; }
+@media (max-width: 480px) { .plan li { grid-template-columns: 22px 1fr; } .plan li .who { grid-column: 2; } }
+.plan-actions { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.plan-actions span { padding: 6px 12px; border-radius: 6px; font: 600 .82rem var(--font-body); border: 1px solid var(--line); color: var(--muted); }
+.plan-actions span:first-child { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.points { display: grid; gap: 22px; }
+.points div { display: grid; gap: 4px; }
+.points h3 { font: 600 1.05rem var(--font-body); }
+.points p { color: var(--muted); }
+
+/* how it works */
+.flow-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.flow { min-width: 720px; width: 100%; height: auto; display: block; }
+.flow text { font-family: var(--font-body); fill: var(--fg); }
+.flow .sub { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.flow .box { fill: var(--surface); stroke: var(--line); }
+.flow .box-accent { fill: var(--surface); stroke: var(--accent); }
+.flow .wire { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.flow .wire-dash { stroke: var(--muted); stroke-width: 1.5; fill: none; stroke-dasharray: 4 4; }
+.flow .arrow { fill: var(--muted); }
+.flow-notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
+@media (max-width: 760px) { .flow-notes { grid-template-columns: minmax(0, 1fr); } }
+.flow-notes p { color: var(--muted); font-size: .96rem; }
+.flow-notes strong { color: var(--fg); font-weight: 600; }
+
+/* install */
+.install { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); }
+@media (max-width: 880px) { .install { grid-template-columns: minmax(0, 1fr); } }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 22px; counter-reset: s; }
+.steps li { display: grid; grid-template-columns: 36px 1fr; gap: 14px; counter-increment: s; min-width: 0; }
+.steps li::before {
+  content: counter(s); display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid var(--line); font: 500 .85rem var(--font-mono); color: var(--accent-text);
+}
+.steps h3 { font: 600 1.05rem var(--font-body); margin-bottom: 4px; }
+.steps p { color: var(--muted); font-size: .97rem; }
+.code { position: relative; margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.code pre { margin: 0; padding: 12px 84px 12px 14px; overflow-x: auto; font: 400 .88rem/1.5 var(--font-mono); }
+.copy {
+  position: absolute; top: 7px; right: 7px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: 500 .75rem var(--font-body);
+}
+.copy:hover { color: var(--fg); }
+.aside { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.aside h3 { font: 700 1.1rem var(--font-display); letter-spacing: -.01em; }
+.aside p { color: var(--muted); font-size: .97rem; }
+.aside ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: .95rem; display: grid; gap: 4px; }
+
+/* open source + faq */
+.oss { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); }
+@media (max-width: 880px) { .oss { grid-template-columns: minmax(0, 1fr); } }
+.oss-copy { display: grid; gap: 16px; align-content: start; }
+.oss-copy p { color: var(--muted); }
+.links { display: flex; gap: 10px; flex-wrap: wrap; }
+details { border-bottom: 1px solid var(--line); }
+details:first-child { border-top: 1px solid var(--line); }
+summary { cursor: pointer; padding: 16px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; font: 400 1.2rem var(--font-mono); color: var(--muted); line-height: 1; }
+details[open] summary::after { content: "−"; }
+details p { color: var(--muted); padding-bottom: 16px; max-width: 40em; }
+
+footer { border-top: 1px solid var(--line); padding-block: 36px; color: var(--muted); font-size: .88rem; }
+footer .wrap { display: grid; gap: 14px; }
+footer .row { display: flex; gap: 12px 24px; flex-wrap: wrap; align-items: center; }
+footer a { color: var(--muted); }
+footer a:hover { color: var(--fg); }
+.theme-toggle { margin-left: auto; background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 5px 10px; font: 500 .8rem var(--font-body); cursor: pointer; }
+</style>
+</head>
+<body>
+
+<nav class="nav" aria-label="Main">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="assets/logo.svg" alt="">Tonefold</a>
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#producer">Producer</a></li>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="https://github.com/vkfolio/tonefold">GitHub</a></li>
+    </ul>
+    <a class="btn btn-primary btn-sm" href="https://github.com/vkfolio/tonefold/releases/latest">Download</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-copy">
+      <span class="eyebrow">AI music composer · Windows · open source</span>
+      <h1>Describe a song. Get <em>every part</em>, ready to edit.</h1>
+      <p class="lede">Tonefold is a composer app. Tell Claude what you want and it writes chords, melody, bass and drums into a piano roll you can change note by note, hear straight away, and export as MIDI or audio. You don't need a DAW, but there's an optional plugin if you use one.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/vkfolio/tonefold/releases/latest">Download for Windows</a>
+        <a class="btn btn-ghost" href="https://github.com/vkfolio/tonefold">View on GitHub</a>
+      </div>
+      <div class="meta"><span>v1.4.0</span><span>GPL-3.0</span><span>Claude or a local Ollama model</span></div>
+    </div>
+
+    <div class="sketch" aria-label="Example: a four-bar sketch written by Tonefold">
+      <div class="chat">
+        <div class="msg you">Lo-fi verse in D minor, 84 BPM. Warm keys, lazy drums.</div>
+        <div class="msg tf">Wrote <b>chords@verse</b> (Dm–B♭–F–C), a topline, a root bass and a laid-back kit. Four bars.</div>
+      </div>
+      <div class="roll-head">
+        <span class="mono">verse · 4 bars · D minor · 84 BPM</span>
+        <button class="play" id="play" type="button" aria-pressed="false">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path id="play-icon" d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+          <span id="play-label">Play sketch</span>
+        </button>
+      </div>
+      <div class="ruler" aria-hidden="true"><span></span><span>1</span><span>2</span><span>3</span><span>4</span></div>
+      <div class="roll-body" id="roll">
+        <div class="ph-track"><div class="playhead" id="playhead" hidden></div></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="rule" id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">What it does</span>
+      <h2>A composer that writes like a band and listens like an editor</h2>
+      <p>Each part follows what's already there, section by section, with the whole song in view. Everything it writes stays editable.</p>
+    </div>
+
+
+    <div class="features">
+      <div class="feature">
+        <span class="tag">12 layer kinds</span>
+        <h3>Composes layer by layer</h3>
+        <p>Melody first? It fits chords to it. Chords first? It writes a melody over them. Bass, drums, pads, arps, plucks, counter-melodies, harmonies, sub and percussion follow.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">humanize</span>
+        <h3>Plays like a person</h3>
+        <p>Repeats are new performances, not copies. Each style has its own groove and pocket, and sustained parts get swells, sustain pedal and 808 glides.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">General MIDI</span>
+        <h3>Sounds right away</h3>
+        <p>A built-in synth means you hear the song before you choose a single instrument. Switch sounds per layer.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">piano roll</span>
+        <h3>Edit by hand</h3>
+        <p>Draw, move and resize notes, set velocity, work in drum lanes and scrub the playhead. The composer sees your edits on its next turn.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">.mid · .wav · stems</span>
+        <h3>Take it anywhere</h3>
+        <p>Export MIDI, a stereo mix and one WAV per layer, or drag a layer straight onto a track in your DAW.</p>
+      </div>
+      <div class="feature">
+        <span class="tag">CLAP · VST3</span>
+        <h3>Optional DAW plugin</h3>
+        <p>The same composer runs inside your DAW, follows its transport and sends live MIDI to your instruments. Tested in FL Studio.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="rule" id="producer">
+  <div class="wrap producer">
+    <div>
+      <div class="section-head" style="margin-bottom: 28px">
+        <span class="eyebrow">Producer mode</span>
+        <h2>It shows you the plan before it writes</h2>
+        <p>For bigger changes, the producer reads your session and proposes a plan: key, tempo, form, and exactly which layer in which section each step will touch. Nothing changes until you approve it.</p>
+      </div>
+      <div class="points">
+        <div>
+          <h3>Four specialists, each in their own lane</h3>
+          <p>Harmony and form, melody and topline, rhythm section, arrangement and mix. Each one can only write its own layers, so a step can't quietly rewrite your melody.</p>
+        </div>
+        <div>
+          <h3>Approval is enforced by the app</h3>
+          <p>Approving isn't a polite request in a prompt. Until you press Approve, the producer can't run any tool that writes.</p>
+        </div>
+        <div>
+          <h3>One click to undo a whole run</h3>
+          <p>A producer run makes more changes than undo can hold, so the session is marked first and Revert puts everything back.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="plan" aria-label="Example producer plan">
+      <div class="plan-top">
+        <strong>Plan: lo-fi song, verse → chorus → bridge</strong>
+        <span>D minor · 84 BPM · intro 4 · verse 8 · chorus 8 · bridge 4</span>
+      </div>
+      <ol>
+        <li><span>Set the form and the progressions</span><span class="who">harmony</span><code>chords@verse</code></li>
+        <li><span>Lift the chorus a fourth, same rhythm</span><span class="who">harmony</span><code>chords@chorus</code></li>
+        <li><span>Topline with a hook on bar 1</span><span class="who">melody</span><code>melody@chorus</code></li>
+        <li><span>Root bass, pushes on the 4-and</span><span class="who">rhythm</span><code>bass@verse</code></li>
+        <li><span>Lazy kit, ghost snares in the verse</span><span class="who">rhythm</span><code>drums@verse</code></li>
+        <li><span>Thin the bridge to pad and sub</span><span class="who">arrangement</span><code>pad@bridge</code></li>
+      </ol>
+      <div class="plan-actions" aria-hidden="true"><span>Approve</span><span>Revise</span><span>Stop</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="rule" id="how">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">How it works</span>
+      <h2>A native app with an agent beside it</h2>
+      <p>The editor, generators and synth are Rust and run without the internet. The composer is a small Node sidecar built on the Claude Agent SDK. It edits your session only through the app's tools.</p>
+    </div>
+
+    <div class="flow-wrap">
+      <svg class="flow" viewBox="0 0 960 250" role="img" aria-label="Diagram: the Tonefold app or DAW plugin talks over a local WebSocket to the composer sidecar, which uses Claude or an Ollama model. The app exports MIDI, WAV and stems.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <rect class="box-accent" x="20" y="40" width="250" height="110" rx="10"/>
+        <text x="40" y="72" font-size="17" font-weight="600">Tonefold app</text>
+        <text class="sub" x="40" y="96">piano roll · generators</text>
+        <text class="sub" x="40" y="114">humanizer · GM synth</text>
+        <text class="sub" x="40" y="132">Rust · runs offline</text>
+
+        <rect class="box" x="20" y="180" width="250" height="50" rx="10" stroke-dasharray="5 4"/>
+        <text x="40" y="211" font-size="14">CLAP / VST3 in your DAW</text>
+        <text class="sub" x="196" y="211">optional</text>
+        <path class="wire-dash" d="M145 150 V180"/>
+
+        <path class="wire" d="M270 95 H370" marker-end="url(#ah)" marker-start="url(#ah)"/>
+        <text class="sub" x="282" y="84">WebSocket</text>
+        <text class="sub" x="282" y="118">localhost</text>
+
+        <rect class="box" x="370" y="40" width="250" height="110" rx="10"/>
+        <text x="390" y="72" font-size="17" font-weight="600">Composer sidecar</text>
+        <text class="sub" x="390" y="96">Claude Agent SDK</text>
+        <text class="sub" x="390" y="114">composer · producer</text>
+        <text class="sub" x="390" y="132">4 fenced specialists</text>
+
+        <path class="wire" d="M620 75 H720" marker-end="url(#ah)"/>
+        <path class="wire" d="M620 120 H720" marker-end="url(#ah)"/>
+        <rect class="box" x="720" y="40" width="220" height="56" rx="10"/>
+        <text x="740" y="73" font-size="15" font-weight="600">Claude</text>
+        <text class="sub" x="820" y="73">your login</text>
+        <rect class="box" x="720" y="104" width="220" height="56" rx="10"/>
+        <text x="740" y="137" font-size="15" font-weight="600">Ollama</text>
+        <text class="sub" x="820" y="137">local or LAN</text>
+
+        <path class="wire" d="M270 205 H370" marker-end="url(#ah)"/>
+        <rect class="box" x="370" y="180" width="250" height="50" rx="10"/>
+        <text x="390" y="211" font-size="14">Export</text>
+        <text class="sub" x="450" y="211">.mid · mix .wav · stems</text>
+      </svg>
+    </div>
+
+    <div class="flow-notes">
+      <p><strong>Works without the composer.</strong> Generation, playback, editing and export need neither Node nor a model. The composer is there when you want to talk to it.</p>
+      <p><strong>Your choice of model.</strong> Use your Claude login, or run on an Ollama model on this PC or another machine on your network. Each keeps its own conversation.</p>
+      <p><strong>Drive it from outside.</strong> A command-line tool and a skill file let Claude Code, Claude Desktop or Codex compose Tonefold songs too.</p>
+    </div>
+  </div>
+</section>
+
+<section class="rule" id="install">
+  <div class="wrap install">
+    <div>
+      <div class="section-head" style="margin-bottom: 28px">
+        <span class="eyebrow">Install</span>
+        <h2>Three steps, no admin prompt</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <div style="min-width:0">
+            <h3>Download the release</h3>
+            <p>Get the latest zip from <a href="https://github.com/vkfolio/tonefold/releases/latest">GitHub Releases</a> and unzip it anywhere.</p>
+          </div>
+        </li>
+        <li>
+          <div style="min-width:0">
+            <h3>Run the installer</h3>
+            <p>It installs the app under your user profile and downloads the built-in sounds once (31 MB).</p>
+            <div class="code"><pre><code id="cmd-install">powershell -ExecutionPolicy Bypass -File scripts\install.ps1</code></pre><button class="copy" type="button" data-copy="cmd-install">Copy</button></div>
+          </div>
+        </li>
+        <li>
+          <div style="min-width:0">
+            <h3>Open Tonefold</h3>
+            <p>Start it from the Start Menu. For the chat composer, install <a href="https://nodejs.org/">Node.js 20+</a> and sign in to Claude Code, or point it at an Ollama server.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+
+    <aside class="aside">
+      <h3>Want it inside your DAW?</h3>
+      <p>Add the CLAP and VST3 plugins. This step asks for one administrator prompt, because plugins go in the system folders DAWs scan.</p>
+      <div class="code"><pre><code id="cmd-plugins">powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins</code></pre><button class="copy" type="button" data-copy="cmd-plugins">Copy</button></div>
+      <ul>
+        <li>Rescan plugins in your DAW and look for Tonefold.</li>
+        <li>FL Studio is the tested host; prefer the CLAP build there.</li>
+        <li>Other CLAP/VST3 hosts should work. <a href="https://github.com/vkfolio/tonefold/issues">Tell us</a> how it goes.</li>
+      </ul>
+      <p>Prefer to build it yourself? See <a href="https://github.com/vkfolio/tonefold#building-from-source">building from source</a>.</p>
+    </aside>
+  </div>
+</section>
+
+<section class="rule" id="faq">
+  <div class="wrap oss">
+    <div class="oss-copy">
+      <span class="eyebrow">Open source</span>
+      <h2 class="h2">Free, GPL-3.0, built in the open</h2>
+      <p>The engine, the app, the plugin and the composer's prompts are all in the repository. Bug reports, genre knowledge and new generators are welcome.</p>
+      <div class="links">
+        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold">Source</a>
+        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/docs/tutorial-twinkle.md">Tutorial</a>
+        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/docs/usage.md">Reference</a>
+        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/CONTRIBUTING.md">Contribute</a>
+      </div>
+    </div>
+
+    <div>
+      <details>
+        <summary>Do I need a DAW?</summary>
+        <p>No. The app composes, plays and exports on its own. The DAW plugin is optional, for people who want the composer next to their own instruments.</p>
+      </details>
+      <details>
+        <summary>What does it cost?</summary>
+        <p>Tonefold is free. The chat composer uses your own Claude login, so any cost is whatever your Claude plan charges, shown per turn in the app. With Ollama it costs nothing beyond your hardware.</p>
+      </details>
+      <details>
+        <summary>Can it run without the cloud?</summary>
+        <p>Yes. Everything except the chat composer runs offline, and the composer can use an Ollama model on your own PC or another machine on your network.</p>
+      </details>
+      <details>
+        <summary>Is there a Mac version?</summary>
+        <p>Not yet. Tonefold is Windows-only today. macOS is on the roadmap; the engine already builds there.</p>
+      </details>
+      <details>
+        <summary>Who owns what I make?</summary>
+        <p>You do. The GPL covers Tonefold's code, not the songs you make with it, and Tonefold claims nothing over them.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="row">
+      <a class="brand" href="#top"><img src="assets/logo.svg" alt="">Tonefold</a>
+      <a href="https://github.com/vkfolio/tonefold">GitHub</a>
+      <a href="https://github.com/vkfolio/tonefold/releases">Releases</a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/LICENSE">Licence</a>
+      <button class="theme-toggle" id="theme" type="button">Theme: system</button>
+    </div>
+    <p>FL Studio is a trademark of Image-Line Software. Claude is a trademark of Anthropic. Tonefold is an independent project, not affiliated with or endorsed by either. Built-in sounds: GeneralUser GS by S. Christian Collins.</p>
+  </div>
+</footer>
+
+<script>
+(() => {
+  // The sketch: four bars in 16ths. Pitched notes are [midi, start, length]; drums are [row, start].
+  const BPM = 84, STEPS = 64, STEP = 60 / BPM / 4;
+  const chords = [[62,0,16],[65,0,16],[69,0,16],[62,16,16],[65,16,16],[70,16,16],[60,32,16],[65,32,16],[69,32,16],[60,48,16],[64,48,16],[67,48,16]];
+  const melody = [[69,0,4],[65,4,2],[67,6,2],[69,8,6],[74,16,4],[72,20,2],[70,22,2],[69,24,8],[72,32,3],[69,35,3],[65,38,2],[69,40,4],[72,44,4],[76,48,4],[74,52,4],[72,56,2],[64,58,6]];
+  const bass = [];
+  [38, 34, 41, 36].forEach((r, b) => bass.push([r, b*16, 6], [r, b*16+6, 2], [r+12, b*16+10, 2], [r, b*16+12, 4]));
+  const drums = [];
+  for (let b = 0; b < 4; b++) {
+    drums.push([0, b*16], [0, b*16+10], [1, b*16+4], [1, b*16+12]);
+    for (let s = 0; s < 16; s += 2) drums.push([2, b*16+s]);
+  }
+  const lanes = [
+    { name: "chords", c: "--lane-chords", notes: chords },
+    { name: "melody", c: "--lane-melody", notes: melody },
+    { name: "bass", c: "--lane-bass", notes: bass },
+    { name: "drums", c: "--lane-drums", notes: drums, drum: true },
+  ];
+
+  const roll = document.getElementById("roll");
+  const els = [];
+  for (const lane of lanes) {
+    const name = document.createElement("div");
+    name.className = "lane-name";
+    name.style.setProperty("--c", `var(${lane.c})`);
+    name.textContent = lane.name;
+    const row = document.createElement("div");
+    row.className = "lane";
+    const pitches = lane.drum ? [0, 1, 2] : lane.notes.map(n => n[0]);
+    const lo = Math.min(...pitches), hi = Math.max(...pitches);
+    const span = Math.max(hi - lo, 1);
+    for (const n of lane.notes) {
+      const el = document.createElement("div");
+      el.className = "note";
+      el.style.setProperty("--c", `var(${lane.c})`);
+      const start = lane.drum ? n[1] : n[1];
+      const len = lane.drum ? 1 : n[2];
+      const pos = lane.drum ? n[0] / 2 : (hi - n[0]) / span;   // 0 = top row
+      el.style.left = `calc(${start / STEPS * 100}% + 1px)`;
+      el.style.width = `calc(${len / STEPS * 100}% - 2px)`;
+      el.style.height = "6px";
+      el.style.top = `calc(8px + ${pos} * (100% - 22px))`;
+      row.appendChild(el);
+      els.push({ el, start, len });
+    }
+    roll.append(name, row);
+  }
+
+  // Playback with WebAudio, started only from the button.
+  const btn = document.getElementById("play"), label = document.getElementById("play-label");
+  const icon = document.getElementById("play-icon"), head = document.getElementById("playhead");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let ctx = null, playing = false, t0 = 0, raf = 0, nodes = [];
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  function voice(type, freq, at, dur, gain, cutoff) {
+    const o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+    o.type = type; o.frequency.value = freq;
+    f.type = "lowpass"; f.frequency.value = cutoff;
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(gain, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(gain * 0.55, at + Math.min(0.25, dur));
+    g.gain.setValueAtTime(gain * 0.55, at + dur);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur + 0.18);
+    o.connect(f).connect(g).connect(ctx.destination);
+    o.start(at); o.stop(at + dur + 0.25);
+    nodes.push(o);
+  }
+  let noiseBuf = null;
+  function noise(at, dur, gain, type, freq) {
+    if (!noiseBuf) {
+      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq;
+    g.gain.setValueAtTime(gain, at); g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    s.connect(f).connect(g).connect(ctx.destination);
+    s.start(at); s.stop(at + dur + 0.05);
+    nodes.push(s);
+  }
+  function kick(at) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(130, at); o.frequency.exponentialRampToValueAtTime(42, at + 0.12);
+    g.gain.setValueAtTime(0.7, at); g.gain.exponentialRampToValueAtTime(0.0001, at + 0.35);
+    o.connect(g).connect(ctx.destination); o.start(at); o.stop(at + 0.4);
+    nodes.push(o);
+  }
+  function schedule(start, loops) {
+    for (let l = 0; l < loops; l++) {
+      const base = start + l * STEPS * STEP;
+      // a little human timing, like the app's humanizer
+      const late = () => (Math.random() - 0.3) * 0.012;
+      chords.forEach(([m, s, n]) => voice("triangle", hz(m), base + s * STEP + late(), n * STEP * 0.95, 0.05, 1800));
+      melody.forEach(([m, s, n]) => voice("square", hz(m), base + s * STEP + late(), n * STEP * 0.85, 0.035, 2400));
+      bass.forEach(([m, s, n]) => voice("sawtooth", hz(m), base + s * STEP + late(), n * STEP * 0.9, 0.09, 420));
+      drums.forEach(([r, s]) => {
+        const at = base + s * STEP + late();
+        if (r === 0) kick(at);
+        else if (r === 1) noise(at, 0.18, 0.28, "bandpass", 1800);
+        else noise(at, 0.05, s % 4 === 0 ? 0.08 : 0.045, "highpass", 7000);
+      });
+    }
+  }
+  const LOOPS = 2;
+  function frame() {
+    const step = (ctx.currentTime - t0) / STEP;
+    if (step >= STEPS * LOOPS) { stop(); return; }
+    const s = step % STEPS;
+    if (!reduce) head.style.left = `${s / STEPS * 100}%`;
+    for (const n of els) n.el.classList.toggle("on", s >= n.start && s < n.start + n.len);
+    raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+    ctx.resume();
+    t0 = ctx.currentTime + 0.08;
+    schedule(t0, LOOPS);
+    playing = true;
+    head.hidden = reduce;
+    btn.setAttribute("aria-pressed", "true");
+    label.textContent = "Stop";
+    icon.setAttribute("d", "M4 3h8v10H4z");
+    raf = requestAnimationFrame(frame);
+  }
+  function stop() {
+    nodes.forEach(n => { try { n.stop(); } catch (e) {} });
+    nodes = [];
+    cancelAnimationFrame(raf);
+    playing = false;
+    head.hidden = true;
+    els.forEach(n => n.el.classList.remove("on"));
+    btn.setAttribute("aria-pressed", "false");
+    label.textContent = "Play sketch";
+    icon.setAttribute("d", "M4 2.5v11l9-5.5z");
+  }
+  btn.addEventListener("click", () => (playing ? stop() : start()));
+
+  // Copy buttons
+  document.querySelectorAll(".copy").forEach(b => b.addEventListener("click", () => {
+    const code = document.getElementById(b.dataset.copy);
+    const done = () => { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1600); };
+    navigator.clipboard?.writeText(code.textContent).then(done, () => {
+      const r = document.createRange(); r.selectNodeContents(code);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    });
+  }));
+
+  // Theme toggle: system → dark → light
+  const root = document.documentElement, tbtn = document.getElementById("theme");
+  const order = ["system", "dark", "light"];
+  const apply = t => {
+    if (t === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", t);
+    tbtn.textContent = `Theme: ${t}`;
+  };
+  let theme = "system";
+  try { theme = localStorage.getItem("tonefold-theme") || "system"; } catch (e) {}
+  apply(theme);
+  tbtn.addEventListener("click", () => {
+    theme = order[(order.indexOf(theme) + 1) % order.length];
+    apply(theme);
+    try { localStorage.setItem("tonefold-theme", theme); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

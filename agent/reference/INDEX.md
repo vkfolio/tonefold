@@ -5,7 +5,7 @@ give you — an unfamiliar genre, a harmonic device, how an instrument is actual
 Read at most three files in a turn, and only when they change what you write; the paths below are
 the whole library, so never guess one.
 
-Do not consult it for basics you already know, for FLVSTX's own tools or notation (that is in your
+Do not consult it for basics you already know, for Tonefold's own tools or notation (that is in your
 instructions), or before a routine "make another take".
 
 Based on "Music Composition Agent Skill" by SJY051, licensed under CC BY 4.0.
