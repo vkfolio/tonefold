@@ -30,6 +30,8 @@ the CLAP and VST3 plugins are optional.
 
 ![The Tonefold editor](docs/images/editor.png)
 
+<a href="https://www.producthunt.com/products/tonefold?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tonefold" target="_blank" rel="noopener noreferrer"><img alt="Tonefold - Describe a song, get every part as editable MIDI | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1273345&amp;theme=light&amp;t=1791477421268"></a>
+
 ## What it does
 
 - **Composes, layer by layer.** Melody first? It fits chords to it. Chords first? It writes a melody
