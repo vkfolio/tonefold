@@ -1,738 +1,618 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tonefold</title>
-<meta name="description" content="Tonefold is an open-source AI music composer app for macOS and Windows. Describe a song to Claude and get chords, melody, bass and drums in a piano roll you can edit, play and export. Optional CLAP/VST3 plugin for your DAW.">
-<meta property="og:title" content="Tonefold — an AI composer you can edit">
-<meta property="og:description" content="Describe a song. Get every part in a piano roll you can edit, hear and export. Free and open source.">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary">
+<meta name="description" content="Tonefold is a free, open-source AI music composer for macOS and Windows. Describe a song to Claude, get chords, melody, bass and drums in a piano roll you can edit note by note, then export MIDI, WAV and stems.">
+<meta name="theme-color" content="#10151C">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="canonical" href="https://vkfolio.github.io/tonefold/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Tonefold">
+<meta property="og:title" content="Tonefold: describe a song, edit every note">
+<meta property="og:description" content="A free, open-source AI music composer for macOS and Windows. Claude writes the layers into a piano roll you can edit, hear and export.">
+<meta property="og:url" content="https://vkfolio.github.io/tonefold/">
+<meta property="og:image" content="https://vkfolio.github.io/tonefold/assets/editor.png">
+<meta property="og:image:alt" content="The Tonefold editor: a piano roll with chord, melody and bass layers">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Tonefold: describe a song, edit every note">
+<meta name="twitter:description" content="A free, open-source AI music composer for macOS and Windows.">
+<meta name="twitter:image" content="https://vkfolio.github.io/tonefold/assets/editor.png">
+<script>
+(function(){var t=null;try{t=localStorage.getItem("tonefold-theme")}catch(e){}
+if(t!=="light"&&t!=="dark"){t=window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"}
+document.documentElement.setAttribute("data-theme",t);document.documentElement.classList.add("js");
+var u=navigator.userAgent||"",p=(navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||"";
+var os="other",mobile=/Android|iPhone|iPad|iPod|Mobile/i.test(u)||(/Mac/.test(p)&&navigator.maxTouchPoints>1);
+if(!mobile){if(/Win/i.test(p+u))os="win";else if(/Mac/i.test(p+u))os="mac"}
+document.documentElement.setAttribute("data-os",os);if(mobile)document.documentElement.setAttribute("data-device","mobile");})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* Layout: a single 1120px column ruled like the editor's piano roll — faint bar lines behind the
-   hero, content in a 12-column grid that stacks to one column on phones. Dark-first, like the app. */
-:root {
-  --bg: #10151C;
-  --panel: #161C25;
-  --surface: #1E2631;
-  --line: #2F3B49;
-  --fg: #E5EBF3;
-  --muted: #92A4B7;
-  --accent: #74DDC4;
-  --accent-ink: #0C1A17;
-  --accent-text: #74DDC4;
-  --lane-chords: #7FA8F5;
-  --lane-melody: #74DDC4;
-  --lane-bass: #F2C26B;
-  --lane-drums: #F28FA0;
-  --grid-bar: rgba(146, 164, 183, .16);
-  --grid-beat: rgba(146, 164, 183, .07);
-  --shadow: 0 30px 80px -30px rgba(0, 0, 0, .6);
-  --font-display: "Unbounded", "Arial Black", system-ui, sans-serif;
-  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
-  --radius: 10px;
-  color-scheme: dark;
+:root{
+  --bg:#10151C;--panel:#161C25;--surface:#1E2631;--line:#2F3B49;--text:#E5EBF3;--muted:#92A4B7;
+  --accent:#74DDC4;--accent-ink:#10151C;--accent-text:#74DDC4;--accent-soft:rgba(116,221,196,.12);
+  --c-chords:#6EA8FF;--c-melody:#F2B36B;--c-bass:#8BD88B;--c-drums:#F08A8A;--c-pad:#B79CF2;--c-arp:#74DDC4;
+  --shadow:0 30px 80px -20px rgba(0,0,0,.65);--grid:rgba(146,164,183,.09);
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"Hanken Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --gutter:clamp(16px,4vw,40px);--max:1200px;color-scheme:dark;
 }
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: #F2F5F8; --panel: #FFFFFF; --surface: #E6ECF2; --line: #C9D3DE;
-    --fg: #131A23; --muted: #4C5D6F; --accent: #74DDC4; --accent-ink: #0C1A17; --accent-text: #0F7A62;
-    --lane-chords: #3F6FD8; --lane-melody: #129C7C; --lane-bass: #C98A12; --lane-drums: #D2506A;
-    --grid-bar: rgba(19, 26, 35, .13); --grid-beat: rgba(19, 26, 35, .05);
-    --shadow: 0 30px 70px -35px rgba(19, 26, 35, .35);
-    color-scheme: light;
-  }
+:root[data-theme="light"]{
+  --bg:#F5F7F9;--panel:#FFFFFF;--surface:#E9EEF3;--line:#CFD8E2;--text:#10151C;--muted:#4A5B6D;
+  --accent:#74DDC4;--accent-ink:#10151C;--accent-text:#0A735F;--accent-soft:rgba(10,115,95,.09);
+  --c-chords:#2F6FD6;--c-melody:#C47A12;--c-bass:#2F9A3F;--c-drums:#D24A4A;--c-pad:#7A58D1;--c-arp:#0A8A72;
+  --shadow:0 30px 70px -25px rgba(16,21,28,.35);--grid:rgba(16,21,28,.07);color-scheme:light;
 }
-:root[data-theme="light"] {
-  --bg: #F2F5F8; --panel: #FFFFFF; --surface: #E6ECF2; --line: #C9D3DE;
-  --fg: #131A23; --muted: #4C5D6F; --accent: #74DDC4; --accent-ink: #0C1A17; --accent-text: #0F7A62;
-  --lane-chords: #3F6FD8; --lane-melody: #129C7C; --lane-bass: #C98A12; --lane-drums: #D2506A;
-  --grid-bar: rgba(19, 26, 35, .13); --grid-beat: rgba(19, 26, 35, .05);
-  --shadow: 0 30px 70px -35px rgba(19, 26, 35, .35);
-  color-scheme: light;
+@media (prefers-color-scheme:light){
+  :root:not([data-theme]){--bg:#F5F7F9;--panel:#FFFFFF;--surface:#E9EEF3;--line:#CFD8E2;--text:#10151C;--muted:#4A5B6D;--accent-text:#0A735F;--grid:rgba(16,21,28,.07)}
 }
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:72px;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:400 17px/1.6 var(--body);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+img,svg{max-width:100%;display:block}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--accent-text);outline-offset:3px;border-radius:4px}
+.skip{position:absolute;left:16px;top:-60px;background:var(--accent);color:var(--accent-ink);padding:10px 16px;border-radius:8px;z-index:100;font-weight:600}
+.skip:focus{top:12px}
+.wrap{width:100%;max-width:calc(var(--max) + 2*var(--gutter));margin:0 auto;padding-inline:var(--gutter)}
+h1,h2,h3{font-family:var(--display);margin:0;letter-spacing:-.02em;line-height:1.05;text-wrap:balance}
+p{margin:0}
+.eyebrow{font:500 12.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-text);display:flex;align-items:center;gap:10px;margin-bottom:18px}
+.eyebrow::before{content:"";width:22px;height:6px;border-radius:2px;background:var(--accent)}
+h2{font-size:clamp(32px,4.6vw,54px);font-weight:700}
+.lede{color:var(--muted);font-size:clamp(17px,1.5vw,19.5px);max-width:58ch}
+section{padding-block:clamp(64px,9vw,120px)}
 
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font: 400 1.0625rem/1.6 var(--font-body);
-  -webkit-font-smoothing: antialiased;
-}
-img { max-width: 100%; display: block; }
-a { color: var(--accent-text); text-underline-offset: 3px; }
-a:hover { text-decoration-thickness: 2px; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-code, kbd, .mono { font-family: var(--font-mono); font-size: .9em; }
-h1, h2, h3 { text-wrap: balance; margin: 0; }
-p { margin: 0; }
-
-.wrap { max-width: 1120px; margin: 0 auto; padding-inline: max(16px, 4vw); }
-
-/* nav */
-.nav {
-  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line);
-}
-.nav .wrap { display: flex; min-width: 0; align-items: center; gap: 24px; min-height: 60px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); text-decoration: none; font: 700 1.05rem var(--font-display); letter-spacing: -.01em; }
-.brand img { width: 28px; height: 28px; }
-.nav ul { display: flex; gap: 22px; list-style: none; margin: 0 0 0 auto; padding: 0; flex-wrap: wrap; }
-.nav ul a { color: var(--muted); text-decoration: none; font-size: .95rem; }
-.nav ul a:hover { color: var(--fg); }
-@media (max-width: 720px) { .nav ul { display: none; } .nav .btn { margin-left: auto; } }
-
-.btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 11px 18px; border-radius: 8px;
-  font: 600 .95rem var(--font-body); text-decoration: none; cursor: pointer;
-  border: 1px solid transparent; transition: transform .15s ease, background .15s ease;
-}
-.btn:active { transform: translateY(1px); }
-.btn-primary { background: var(--accent); color: var(--accent-ink); }
-.btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
-.btn-ghost { background: transparent; color: var(--fg); border-color: var(--line); }
-.btn-ghost:hover { background: var(--surface); }
-.btn-sm { padding: 8px 14px; font-size: .88rem; }
+/* header */
+header.top{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid transparent}
+header.top.scrolled{border-bottom-color:var(--line)}
+.bar{display:flex;align-items:center;gap:20px;height:64px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;font:700 21px/1 var(--display);letter-spacing:-.02em}
+.brand img{width:28px;height:28px}
+nav.main{margin-left:auto;display:flex;gap:4px}
+nav.main a{text-decoration:none;color:var(--muted);font-size:15px;font-weight:500;padding:8px 12px;border-radius:8px}
+nav.main a:hover{color:var(--text);background:var(--surface)}
+.iconbtn{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);display:grid;place-items:center;cursor:pointer}
+.iconbtn:hover{border-color:var(--muted)}
+.iconbtn svg{width:18px;height:18px}
+.sun{display:none}:root[data-theme="light"] .sun{display:block}:root[data-theme="light"] .moon{display:none}
+.btn{display:inline-flex;align-items:center;gap:10px;font:600 16px/1 var(--body);padding:15px 22px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--text);text-decoration:none;cursor:pointer;min-height:48px;transition:transform .15s,border-color .15s,background .15s}
+.btn:hover{border-color:var(--muted);transform:translateY(-1px)}
+.btn svg{width:20px;height:20px;flex:none}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);box-shadow:0 8px 30px -8px rgba(116,221,196,.55)}
+.btn.primary:hover{background:#8be6d0;border-color:#8be6d0}
+.btn.sm{padding:10px 16px;min-height:40px;font-size:15px}
+.hdr-dl{display:inline-flex}
+@media (max-width:820px){nav.main{display:none}.bar{justify-content:space-between}.hdr-dl{display:none}.iconbtn:last-child{margin-left:auto}}
 
 /* hero */
-.hero { position: relative; padding-block: clamp(48px, 8vw, 96px) 56px; overflow: hidden; }
-.hero::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background-image:
-    linear-gradient(to right, var(--grid-bar) 1px, transparent 1px),
-    linear-gradient(to right, var(--grid-beat) 1px, transparent 1px);
-  background-size: 192px 100%, 48px 100%;
-  mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
-  -webkit-mask-image: linear-gradient(to bottom, black 0%, transparent 85%);
-}
-.hero .wrap { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: clamp(32px, 5vw, 64px); align-items: center; }
-@media (max-width: 920px) { .hero .wrap { grid-template-columns: minmax(0, 1fr); } }
-.hero-copy { display: grid; gap: 22px; min-width: 0; }
-.eyebrow { font: 500 .78rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent-text); }
-.hero h1 { font: 700 clamp(2.1rem, 4.6vw, 3.5rem)/1.08 var(--font-display); letter-spacing: -.025em; }
-.hero h1 em { font-style: normal; color: var(--accent-text); }
-.lede { color: var(--muted); font-size: 1.15rem; max-width: 34em; }
-.cta { display: flex; gap: 12px; flex-wrap: wrap; }
-.meta { display: flex; gap: 8px 18px; flex-wrap: wrap; color: var(--muted); font: 400 .85rem var(--font-mono); }
+.hero{position:relative;padding-block:clamp(48px,8vw,104px) clamp(40px,6vw,72px);overflow:hidden;border-bottom:1px solid var(--line)}
+.hero-roll{position:absolute;top:0;bottom:0;right:0;left:46%;z-index:0;pointer-events:none;overflow:hidden;opacity:.55;
+  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 40%);mask-image:linear-gradient(90deg,transparent 0,#000 40%)}
+.hero-roll svg{width:100%;height:100%}
+:root[data-theme="light"] .hero-roll{opacity:.5}
+@media (max-width:900px){.hero-roll{left:0;top:auto;height:280px;opacity:.4;-webkit-mask-image:linear-gradient(180deg,transparent 0,#000 70%);mask-image:linear-gradient(180deg,transparent 0,#000 70%)}}
+.hero .wrap{position:relative;z-index:1}
+.hero h1{font-size:clamp(44px,7vw,96px);font-weight:800;line-height:.98;letter-spacing:-.03em;max-width:9.5ch}
+.hero h1 em{font-style:normal;color:var(--accent-text)}
+.hero .lede{margin-top:28px;max-width:52ch;color:var(--text);opacity:.82}
+.cta{margin-top:34px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.cta-note{margin-top:16px;font:400 13.5px/1.5 var(--mono);color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+.cta-note span+span::before{content:"/";margin-right:18px;color:var(--line)}
+.phone-note{display:none;margin-top:22px;padding:14px 16px;border:1px dashed var(--line);border-radius:12px;color:var(--muted);font-size:15px;max-width:46ch}
+/* OS-based CTA states */
+.dl-mac,.dl-win{order:0}
+:root[data-os="win"] .dl-win{order:-1}
+:root[data-os="win"] .dl-win,:root[data-os="mac"] .dl-mac,:root:not([data-os="win"]):not([data-os="mac"]) .dl-mac{}
+.cta .btn.dl{background:var(--panel)}
+:root[data-os="mac"] .cta .dl-mac,:root[data-os="win"] .cta .dl-win,:root[data-os="other"] .cta .dl-mac{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);box-shadow:0 8px 30px -8px rgba(116,221,196,.55)}
+:root:not([data-os]) .cta .dl-mac{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+:root[data-device="mobile"] .cta .btn.dl{background:var(--panel);color:var(--text);border-color:var(--line);box-shadow:none}
+:root[data-device="mobile"] .phone-note{display:block}
+.mobile-only{display:none}:root[data-device="mobile"] .mobile-only{display:inline-flex}
+:root[data-device="mobile"] .hdr-dl{display:none}
 
-/* the sketch: chat + piano roll */
-.sketch {
-  min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  box-shadow: var(--shadow); overflow: hidden;
-}
-.chat { display: grid; gap: 10px; padding: 16px 16px 14px; border-bottom: 1px solid var(--line); }
-.msg { max-width: 88%; padding: 9px 13px; border-radius: 12px; font-size: .93rem; line-height: 1.45; }
-.msg.you { justify-self: end; background: var(--surface); border-bottom-right-radius: 4px; }
-.msg.tf { justify-self: start; border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-.msg.tf b { color: var(--accent-text); font-weight: 600; }
-.roll-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.roll-head .mono { color: var(--muted); font-size: .78rem; }
-.play {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
-  background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 999px;
-  padding: 6px 14px 6px 10px; font: 600 .85rem var(--font-body); cursor: pointer;
-}
-.play svg { width: 16px; height: 16px; }
-.roll { display: grid; grid-template-columns: 72px 1fr; }
-.lane-name {
-  display: flex; align-items: center; padding-left: 10px; font: 500 .7rem var(--font-mono);
-  color: var(--muted); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
-  text-transform: lowercase;
-}
-.lane-name::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 2px; margin-right: 7px; background: var(--c); }
-.lane {
-  position: relative; height: 62px; border-bottom: 1px solid var(--line);
-  background-image:
-    linear-gradient(to right, var(--grid-bar) 1px, transparent 1px),
-    linear-gradient(to right, var(--grid-beat) 1px, transparent 1px);
-  background-size: 25% 100%, 6.25% 100%;
-}
-.lane:last-of-type, .lane-name:nth-last-child(2) { border-bottom: 0; }
-.note {
-  position: absolute; border-radius: 3px; background: var(--c);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 60%, black);
-  transition: filter .1s ease;
-}
-.note.on { filter: brightness(1.35) saturate(1.1); }
-.ruler { display: grid; grid-template-columns: 72px repeat(4, 1fr); font: 400 .7rem var(--font-mono); color: var(--muted); border-bottom: 1px solid var(--line); }
-.ruler span { padding: 4px 6px; }
-.ruler span:first-child { border-right: 1px solid var(--line); }
-.playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--fg); opacity: .85; pointer-events: none; left: 0; }
-.roll-body { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: 72px 1fr; }
-.roll-body .ph-track { position: absolute; left: 72px; right: 0; top: 0; bottom: 0; pointer-events: none; }
+/* showcase */
+.shot{padding-top:clamp(32px,5vw,64px);padding-bottom:0}
+.frame{position:relative;border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:10px;box-shadow:var(--shadow)}
+.frame img{width:100%;height:auto;border-radius:9px;aspect-ratio:1600/929;background:#10151C}
+.frame::after{content:"";position:absolute;inset:-1px;border-radius:16px;pointer-events:none;box-shadow:0 0 0 1px rgba(116,221,196,.12),0 0 120px -30px rgba(116,221,196,.35)}
+figcaption{margin-top:14px;font:400 13px/1.5 var(--mono);color:var(--muted)}
+figure{margin:0}
+.shot-grid{display:grid;grid-template-columns:1fr;gap:0}
+.callouts{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:28px;border-top:1px solid var(--line)}
+.callouts div{padding:18px 20px 0 0}
+.callouts b{display:block;font:600 15px/1.3 var(--display);margin-bottom:6px;letter-spacing:-.005em}
+.callouts span{color:var(--muted);font-size:15px;line-height:1.5;display:block}
+.callouts i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px}
+@media (max-width:820px){.callouts{grid-template-columns:1fr 1fr}.callouts div{padding-bottom:12px}}
+@media (max-width:480px){.callouts{grid-template-columns:1fr}}
 
-/* sections */
-section { padding-block: clamp(56px, 8vw, 96px); }
-.section-head { display: grid; gap: 12px; max-width: 44rem; margin-bottom: 40px; }
-.section-head h2, .h2 { font: 700 clamp(1.6rem, 3vw, 2.3rem)/1.15 var(--font-display); letter-spacing: -.02em; }
-.section-head p { color: var(--muted); font-size: 1.08rem; }
-.rule { border-top: 1px solid var(--line); }
+/* demo */
+.demo{background:var(--panel);border-block:1px solid var(--line);margin-top:clamp(64px,9vw,120px)}
+.demo-head{display:flex;justify-content:space-between;align-items:flex-end;gap:32px;flex-wrap:wrap;margin-bottom:36px}
+.demo-head .lede{max-width:44ch}
+.video{position:relative;aspect-ratio:16/9;border-radius:16px;overflow:hidden;background:#000;border:1px solid var(--line);box-shadow:var(--shadow)}
+.video button.facade{all:unset;cursor:pointer;position:absolute;inset:0;display:block}
+.video img,.video iframe{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:cover}
+.video .scrim{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.05),rgba(0,0,0,.55))}
+.play{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:84px;height:84px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;box-shadow:0 0 0 10px rgba(116,221,196,.22),0 20px 50px rgba(0,0,0,.5);transition:transform .2s}
+.play svg{width:32px;height:32px;margin-left:4px}
+.facade:hover .play{transform:translate(-50%,-50%) scale(1.07)}
+.facade:focus-visible{outline:3px solid var(--accent);outline-offset:-6px}
+.video .dur{position:absolute;left:18px;bottom:16px;right:18px;display:flex;justify-content:space-between;align-items:center;color:#fff;font:500 14px/1.3 var(--mono)}
+.video .dur span{background:rgba(0,0,0,.6);padding:5px 9px;border-radius:6px}
+.demo-cap{margin-top:16px;display:flex;gap:10px;color:var(--muted);font-size:15px;max-width:80ch}
+.demo-cap svg{width:18px;height:18px;flex:none;margin-top:4px;color:var(--accent-text)}
+@media (max-width:600px){.play{width:64px;height:64px}.play svg{width:24px;height:24px}.video .dur{font-size:12px}}
 
-.shot { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); background: var(--panel); }
-.shot figcaption { padding: 10px 14px; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); }
-figure { margin: 0; }
+/* features */
+.feat{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(32px,6vw,96px);align-items:start}
+.feat .sticky{position:sticky;top:96px}
+.rows{border-top:1px solid var(--line)}
+.row{display:grid;grid-template-columns:14px 1fr;gap:20px;padding:26px 0;border-bottom:1px solid var(--line)}
+.row .mk{width:6px;height:100%;min-height:36px;border-radius:3px;margin-top:4px;background:var(--c)}
+.row h3{font-size:22px;font-weight:700;margin-bottom:8px;letter-spacing:-.015em;line-height:1.2}
+.row p{color:var(--muted);font-size:16.5px}
+.row code,.faq code,.inline-code{font:500 .86em var(--mono);background:var(--surface);padding:2px 6px;border-radius:5px;border:1px solid var(--line)}
+.arr{margin-top:44px;border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:18px 18px 12px}
+.arr svg{width:100%;height:auto}
+.arr figcaption{margin-top:10px}
+@media (max-width:900px){.feat{grid-template-columns:minmax(0,1fr)}.feat .sticky{position:static}}
 
-.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 36px 32px; }
-@media (max-width: 900px) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 600px) { .features { grid-template-columns: minmax(0, 1fr); } }
-.feature { display: grid; gap: 8px; align-content: start; padding-top: 18px; border-top: 2px solid var(--line); min-width: 0; }
-.feature .tag { font: 500 .75rem var(--font-mono); color: var(--accent-text); }
-.feature h3 { font: 600 1.12rem/1.3 var(--font-body); }
-.feature p { color: var(--muted); font-size: .98rem; }
+/* producer flow */
+.flow-sec{background:var(--panel);border-block:1px solid var(--line)}
+.flow-head{max-width:760px;margin-bottom:48px}
+.flow{display:grid;grid-template-columns:minmax(0,1.15fr) 56px minmax(0,.7fr) 56px minmax(0,1.5fr) 56px minmax(0,1fr);align-items:stretch}
+.stage{border:1px solid var(--line);background:var(--bg);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:12px}
+.stage .tag{font:500 12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.stage h3{font-size:21px;font-weight:700;line-height:1.15}
+.stage p{font-size:15px;color:var(--muted);line-height:1.5}
+.plan{font:400 13px/1.7 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--text)}
+.plan .k{color:var(--muted)}
+.plan .l{display:block}
+.plan b{font-weight:500}
+.c1{color:var(--c-chords)}.c2{color:var(--c-melody)}.c3{color:var(--c-bass)}.c4{color:var(--c-drums)}.c5{color:var(--c-pad)}
+.gate{border:2px solid var(--accent);background:var(--accent-soft);align-items:flex-start;justify-content:center}
+.gate .tag{color:var(--accent-text)}
+.gate .lock{width:34px;height:34px;color:var(--accent-text)}
+.join{position:relative;display:grid;place-items:center}
+.join::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;background:repeating-linear-gradient(90deg,var(--muted) 0 6px,transparent 6px 11px);opacity:.6}
+.join svg{position:relative;width:22px;height:22px;background:var(--panel);color:var(--accent-text);border-radius:50%}
+.specs{gap:8px}
+.spec{display:flex;align-items:center;gap:12px;border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:10px 12px;font:600 15px/1.25 var(--display);flex:1}
+.spec i{flex:none;width:6px;align-self:stretch;border-radius:3px;background:var(--c)}
+.spec small{display:block;font:400 12px/1.4 var(--mono);color:var(--muted);margin-top:3px}
+.ledger{font:400 13px/1.8 var(--mono);color:var(--muted)}
+.ledger span{display:flex;gap:8px;align-items:center}
+.ledger svg{width:14px;height:14px;color:var(--accent-text);flex:none}
+.revert{margin-top:auto;display:inline-flex;align-items:center;gap:8px;font:600 14px/1 var(--body);border:1px solid var(--line);border-radius:9px;padding:10px 12px;color:var(--text);background:var(--panel);width:fit-content}
+.revert svg{width:16px;height:16px}
+.flow-foot{margin-top:28px;color:var(--muted);font-size:15.5px;max-width:78ch}
+@media (max-width:1020px){
+  .flow{grid-template-columns:1fr}
+  .join{height:44px}.join::before{left:50%;right:auto;top:0;bottom:0;width:2px;height:auto;background:repeating-linear-gradient(180deg,var(--muted) 0 6px,transparent 6px 11px)}
+  .join svg{transform:rotate(90deg)}
+}
 
-/* producer */
-.producer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); align-items: start; }
-@media (max-width: 880px) { .producer { grid-template-columns: minmax(0, 1fr); } }
-.plan { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
-.plan-top { padding: 14px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
-.plan-top strong { font-weight: 600; }
-.plan-top span { color: var(--muted); font: 400 .8rem var(--font-mono); }
-.plan ol { list-style: none; margin: 0; padding: 6px 0; counter-reset: step; }
-.plan li { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: baseline; padding: 9px 16px; counter-increment: step; }
-.plan li::before { content: counter(step); font: 500 .78rem var(--font-mono); color: var(--muted); }
-.plan li code { color: var(--accent-text); background: var(--surface); padding: 1px 6px; border-radius: 4px; font-size: .8rem; white-space: nowrap; }
-.plan li .who { font: 400 .75rem var(--font-mono); color: var(--muted); white-space: nowrap; }
-@media (max-width: 480px) { .plan li { grid-template-columns: 22px 1fr; } .plan li .who { grid-column: 2; } }
-.plan-actions { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-.plan-actions span { padding: 6px 12px; border-radius: 6px; font: 600 .82rem var(--font-body); border: 1px solid var(--line); color: var(--muted); }
-.plan-actions span:first-child { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-.points { display: grid; gap: 22px; }
-.points div { display: grid; gap: 4px; }
-.points h3 { font: 600 1.05rem var(--font-body); }
-.points p { color: var(--muted); }
-
-/* how it works */
-.flow-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
-.flow { min-width: 720px; width: 100%; height: auto; display: block; }
-.flow text { font-family: var(--font-body); fill: var(--fg); }
-.flow .sub { fill: var(--muted); font-family: var(--font-mono); font-size: 11px; }
-.flow .box { fill: var(--surface); stroke: var(--line); }
-.flow .box-accent { fill: var(--surface); stroke: var(--accent); }
-.flow .wire { stroke: var(--muted); stroke-width: 1.5; fill: none; }
-.flow .wire-dash { stroke: var(--muted); stroke-width: 1.5; fill: none; stroke-dasharray: 4 4; }
-.flow .arrow { fill: var(--muted); }
-.flow-notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-top: 28px; }
-@media (max-width: 760px) { .flow-notes { grid-template-columns: minmax(0, 1fr); } }
-.flow-notes p { color: var(--muted); font-size: .96rem; }
-.flow-notes strong { color: var(--fg); font-weight: 600; }
+/* architecture */
+.arch{margin-top:44px;display:grid;grid-template-columns:minmax(0,1.2fr) 90px minmax(0,1fr) 90px minmax(0,1fr);align-items:stretch;gap:0}
+.node{border:1px solid var(--line);background:var(--panel);border-radius:14px;padding:20px;position:relative}
+.node .tag{font:500 12px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:block}
+.node h3{font-size:20px;font-weight:700;margin-bottom:8px;line-height:1.15}
+.node p,.node li{font-size:15px;color:var(--muted);line-height:1.5}
+.node ul{margin:10px 0 0;padding:0;list-style:none;display:grid;gap:6px}
+.node li{display:flex;gap:10px;align-items:baseline}
+.node li::before{content:"";width:8px;height:3px;border-radius:2px;background:var(--accent);flex:none;transform:translateY(-3px)}
+.node.hl{border-color:var(--accent)}
+.wire{display:grid;place-items:center;text-align:center;position:relative;font:400 11.5px/1.3 var(--mono);color:var(--muted)}
+.wire::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;background:var(--accent);opacity:.7}
+.wire span{position:relative;background:var(--bg);padding:4px 6px;z-index:1}
+.wire svg{position:absolute;width:14px;height:14px;color:var(--accent-text)}
+.wire svg.l{left:-2px;top:calc(50% - 7px)}.wire svg.r{right:-2px;top:calc(50% - 7px)}
+.llms{display:grid;gap:12px;align-content:stretch}
+.llms .node{padding:16px 18px}
+.arch-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:16px}
+.node.dash{border-style:dashed}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.chip{font:500 12.5px/1 var(--mono);padding:6px 9px;border-radius:7px;background:var(--surface);border:1px solid var(--line);color:var(--text)}
+@media (max-width:1020px){
+  .arch{grid-template-columns:1fr}
+  .wire{height:64px}.wire::before{left:50%;right:auto;top:0;bottom:0;width:2px;height:auto}
+  .wire svg.l{left:calc(50% - 7px);top:-2px}.wire svg.r{right:auto;left:calc(50% - 7px);top:auto;bottom:-2px}
+  .arch-sub{grid-template-columns:1fr}
+  .wire svg.l{transform:rotate(-90deg)}.wire svg.r{transform:rotate(90deg)}
+}
 
 /* install */
-.install { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); }
-@media (max-width: 880px) { .install { grid-template-columns: minmax(0, 1fr); } }
-.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 22px; counter-reset: s; }
-.steps li { display: grid; grid-template-columns: 36px 1fr; gap: 14px; counter-increment: s; min-width: 0; }
-.steps li::before {
-  content: counter(s); display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px;
-  border: 1px solid var(--line); font: 500 .85rem var(--font-mono); color: var(--accent-text);
-}
-.steps h3 { font: 600 1.05rem var(--font-body); margin-bottom: 4px; }
-.steps p { color: var(--muted); font-size: .97rem; }
-.code { position: relative; margin-top: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
-.code pre { margin: 0; padding: 12px 84px 12px 14px; overflow-x: auto; font: 400 .88rem/1.5 var(--font-mono); }
-.copy {
-  position: absolute; top: 7px; right: 7px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
-  background: var(--panel); border: 1px solid var(--line); color: var(--muted); font: 500 .75rem var(--font-body);
-}
-.copy:hover { color: var(--fg); }
-.platform { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 18px; align-content: start; min-width: 0; }
-.platform h3 { font: 700 1.15rem var(--font-display); letter-spacing: -.01em; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
-.platform h3 .mono { font: 400 .78rem var(--font-mono); color: var(--muted); letter-spacing: 0; }
-.steps h4 { font: 600 1.02rem var(--font-body); margin: 0 0 4px; }
-.install-note { color: var(--muted); font-size: .95rem; margin-top: 28px; max-width: 48em; }
-.aside { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: grid; gap: 12px; align-content: start; min-width: 0; }
-.aside h3 { font: 700 1.1rem var(--font-display); letter-spacing: -.01em; }
-.aside p { color: var(--muted); font-size: .97rem; }
-.aside ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: .95rem; display: grid; gap: 4px; }
+.install{background:var(--panel);border-block:1px solid var(--line)}
+.inst-grid{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,8fr);gap:clamp(32px,6vw,96px)}
+.tabs{display:inline-flex;border:1px solid var(--line);border-radius:12px;padding:4px;background:var(--bg);gap:4px;margin-bottom:24px}
+.tabs button{all:unset;cursor:pointer;padding:10px 20px;border-radius:9px;font:600 15px/1 var(--body);color:var(--muted);min-height:20px}
+.tabs button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink)}
+.tabs button:focus-visible{outline:2px solid var(--accent-text);outline-offset:2px}
+.js .panel[hidden]{display:none}
+.steps{list-style:none;margin:0;padding:0;counter-reset:s;display:grid;gap:0}
+.steps>li{counter-increment:s;display:grid;grid-template-columns:36px minmax(0,1fr);gap:16px;padding:20px 0;border-bottom:1px solid var(--line)}
+.steps>li:first-child{padding-top:0}
+.steps>li::before{content:counter(s);width:30px;height:30px;border-radius:50%;border:1px solid var(--accent-text);color:var(--accent-text);display:grid;place-items:center;font:500 13px/1 var(--mono)}
+.steps h3{font-size:18px;font-weight:700;margin-bottom:6px;line-height:1.25;font-family:var(--body);letter-spacing:-.005em}
+.steps p{color:var(--muted);font-size:16px}
+.code{position:relative;margin-top:12px;background:var(--bg);border:1px solid var(--line);border-radius:10px;display:flex;align-items:stretch;min-width:0}
+.code pre{margin:0;padding:14px 16px;overflow-x:auto;font:400 13.5px/1.6 var(--mono);color:var(--text);flex:1;min-width:0;white-space:pre}
+.copy{all:unset;cursor:pointer;flex:none;padding:0 14px;border-left:1px solid var(--line);color:var(--muted);font:500 12.5px/1 var(--mono);display:grid;place-items:center;min-width:64px}
+.copy:hover{color:var(--text);background:var(--surface)}
+.copy:focus-visible{outline:2px solid var(--accent-text);outline-offset:-2px}
+.copy.done{color:var(--accent-text)}
+.req{margin-top:36px;border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:var(--bg);color:var(--muted);font-size:15.5px}
+.req b{color:var(--text)}
+.dls{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}
+@media (max-width:900px){.inst-grid{grid-template-columns:minmax(0,1fr)}}
+.inst-grid>*,.feat>*,.os-grid>*,.faq-grid>*{min-width:0}
 
-/* open source + faq */
-.oss { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 64px); }
-@media (max-width: 880px) { .oss { grid-template-columns: minmax(0, 1fr); } }
-.oss-copy { display: grid; gap: 16px; align-content: start; }
-.oss-copy p { color: var(--muted); }
-.links { display: flex; gap: 10px; flex-wrap: wrap; }
-details { border-bottom: 1px solid var(--line); }
-details:first-child { border-top: 1px solid var(--line); }
-summary { cursor: pointer; padding: 16px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
-summary::-webkit-details-marker { display: none; }
-summary::after { content: "+"; font: 400 1.2rem var(--font-mono); color: var(--muted); line-height: 1; }
-details[open] summary::after { content: "−"; }
-details p { color: var(--muted); padding-bottom: 16px; max-width: 40em; }
+/* open source */
+.os-grid{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,6fr);gap:clamp(32px,6vw,96px);align-items:start}
+.links{border-top:1px solid var(--line)}
+.links a{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 4px;border-bottom:1px solid var(--line);text-decoration:none;font:600 20px/1.2 var(--display);letter-spacing:-.01em;transition:padding .15s,color .15s}
+.links a small{display:block;font:400 14px/1.4 var(--body);color:var(--muted);margin-top:4px;letter-spacing:0}
+.links a:hover{color:var(--accent-text);padding-left:12px}
+.links svg{width:20px;height:20px;flex:none;color:var(--muted)}
+.proof{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}
+.pill{font:500 13px/1 var(--mono);padding:9px 12px;border:1px solid var(--line);border-radius:999px;background:var(--panel);display:inline-flex;gap:8px;align-items:center}
+.pill i{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+@media (max-width:900px){.os-grid{grid-template-columns:minmax(0,1fr)}}
 
-footer { border-top: 1px solid var(--line); padding-block: 36px; color: var(--muted); font-size: .88rem; }
-footer .wrap { display: grid; gap: 14px; }
-footer .row { display: flex; gap: 12px 24px; flex-wrap: wrap; align-items: center; }
-footer a { color: var(--muted); }
-footer a:hover { color: var(--fg); }
-.theme-toggle { margin-left: auto; background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 5px 10px; font: 500 .8rem var(--font-body); cursor: pointer; }
+/* faq */
+.faq-grid{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,8fr);gap:clamp(32px,6vw,96px)}
+.faq{border-top:1px solid var(--line)}
+.faq details{border-bottom:1px solid var(--line)}
+.faq summary{list-style:none;cursor:pointer;padding:22px 0;display:flex;justify-content:space-between;gap:20px;align-items:center;font:600 20px/1.25 var(--display);letter-spacing:-.01em}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"";flex:none;width:12px;height:12px;border-right:2px solid var(--accent-text);border-bottom:2px solid var(--accent-text);transform:rotate(45deg) translateY(-3px);transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(-135deg)}
+.faq details p{padding:0 40px 24px 0;color:var(--muted);font-size:16.5px;max-width:64ch}
+@media (max-width:900px){.faq-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* closing + footer */
+.closing{padding-block:clamp(56px,8vw,96px);border-top:1px solid var(--line);background:var(--panel)}
+.closing .wrap{display:flex;justify-content:space-between;align-items:center;gap:32px;flex-wrap:wrap}
+.closing h2{max-width:16ch}
+footer{padding:48px 0 56px;border-top:1px solid var(--line);font-size:14.5px;color:var(--muted)}
+.foot{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:32px}
+.foot .brand{color:var(--text);margin-bottom:14px}
+.foot p{max-width:70ch;line-height:1.65}
+.foot nav{display:flex;flex-direction:column;gap:8px}
+.foot nav a{text-decoration:none}.foot nav a:hover{color:var(--text);text-decoration:underline}
+@media (max-width:700px){.foot{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
-
-<nav class="nav" aria-label="Main">
-  <div class="wrap">
-    <a class="brand" href="#top"><img src="assets/logo.svg" alt="">Tonefold</a>
-    <ul>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#producer">Producer</a></li>
-      <li><a href="#how">How it works</a></li>
-      <li><a href="#install">Install</a></li>
-      <li><a href="https://github.com/vkfolio/tonefold">GitHub</a></li>
-    </ul>
-    <a class="btn btn-primary btn-sm" href="#install">Download</a>
-  </div>
-</nav>
-
-<header class="hero" id="top">
-  <div class="wrap">
-    <div class="hero-copy">
-      <span class="eyebrow">AI music composer · macOS · Windows · open source</span>
-      <h1>Describe a song. Get <em>every part</em>, ready to edit.</h1>
-      <p class="lede">Tonefold is a composer app. Tell Claude what you want and it writes chords, melody, bass and drums into a piano roll you can change note by note, hear straight away, and export as MIDI or audio. You don't need a DAW, but there's an optional plugin if you use one.</p>
-      <div class="cta">
-        <a class="btn btn-primary" id="dl-primary" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Download for macOS</a>
-        <a class="btn btn-ghost" id="dl-secondary" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Download for Windows</a>
-      </div>
-      <div class="meta"><span>v1.4.0</span><span>Apple Silicon + Intel</span><span>GPL-3.0</span><span><a href="https://github.com/vkfolio/tonefold">Source on GitHub</a></span></div>
-    </div>
-
-    <div class="sketch" aria-label="Example: a four-bar sketch written by Tonefold">
-      <div class="chat">
-        <div class="msg you">Lo-fi verse in D minor, 84 BPM. Warm keys, lazy drums.</div>
-        <div class="msg tf">Wrote <b>chords@verse</b> (Dm–B♭–F–C), a topline, a root bass and a laid-back kit. Four bars.</div>
-      </div>
-      <div class="roll-head">
-        <span class="mono">verse · 4 bars · D minor · 84 BPM</span>
-        <button class="play" id="play" type="button" aria-pressed="false">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path id="play-icon" d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
-          <span id="play-label">Play sketch</span>
-        </button>
-      </div>
-      <div class="ruler" aria-hidden="true"><span></span><span>1</span><span>2</span><span>3</span><span>4</span></div>
-      <div class="roll-body" id="roll">
-        <div class="ph-track"><div class="playhead" id="playhead" hidden></div></div>
-      </div>
-    </div>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top" id="top">
+  <div class="wrap bar">
+    <a class="brand" href="#top" aria-label="Tonefold home"><img src="assets/logo.svg" width="28" height="28" alt="">Tonefold</a>
+    <nav class="main" aria-label="Primary">
+      <a href="#demo">Demo</a><a href="#producer">Producer mode</a><a href="#architecture">Architecture</a><a href="#install">Install</a><a href="#faq">FAQ</a>
+      <a href="https://github.com/vkfolio/tonefold">GitHub</a>
+    </nav>
+    <button class="iconbtn" id="theme" type="button" aria-label="Toggle light and dark theme">
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </button>
+    <a class="btn primary sm hdr-dl" href="#install">Download</a>
   </div>
 </header>
 
-<section class="rule" id="features">
+<main id="main">
+<section class="hero" style="padding-bottom:clamp(40px,6vw,72px)">
+  <div class="hero-roll" aria-hidden="true"><svg viewBox="0 0 1100 620" preserveAspectRatio="xMaxYMid slice" focusable="false"><line x1="0" x2="1100" y1="0" y2="0" stroke="var(--grid)"/><line x1="0" x2="1100" y1="38.75" y2="38.75" stroke="var(--grid)"/><line x1="0" x2="1100" y1="77.5" y2="77.5" stroke="var(--grid)"/><line x1="0" x2="1100" y1="116.25" y2="116.25" stroke="var(--grid)"/><line x1="0" x2="1100" y1="155" y2="155" stroke="var(--grid)"/><line x1="0" x2="1100" y1="193.75" y2="193.75" stroke="var(--grid)"/><line x1="0" x2="1100" y1="232.5" y2="232.5" stroke="var(--grid)"/><line x1="0" x2="1100" y1="271.25" y2="271.25" stroke="var(--grid)"/><line x1="0" x2="1100" y1="310" y2="310" stroke="var(--grid)"/><line x1="0" x2="1100" y1="348.75" y2="348.75" stroke="var(--grid)"/><line x1="0" x2="1100" y1="387.5" y2="387.5" stroke="var(--grid)"/><line x1="0" x2="1100" y1="426.25" y2="426.25" stroke="var(--grid)"/><line x1="0" x2="1100" y1="465" y2="465" stroke="var(--grid)"/><line x1="0" x2="1100" y1="503.75" y2="503.75" stroke="var(--grid)"/><line x1="0" x2="1100" y1="542.5" y2="542.5" stroke="var(--grid)"/><line x1="0" x2="1100" y1="581.25" y2="581.25" stroke="var(--grid)"/><line x1="0" x2="1100" y1="620" y2="620" stroke="var(--grid)"/><line y1="0" y2="620" x1="0" x2="0" stroke="var(--grid)" stroke-width="2"/><line y1="0" y2="620" x1="22.916666666666668" x2="22.916666666666668" stroke="var(--grid)" /><line y1="0" y2="620" x1="45.833333333333336" x2="45.833333333333336" stroke="var(--grid)" /><line y1="0" y2="620" x1="68.75" x2="68.75" stroke="var(--grid)" /><line y1="0" y2="620" x1="91.66666666666667" x2="91.66666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="114.58333333333334" x2="114.58333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="137.5" x2="137.5" stroke="var(--grid)" /><line y1="0" y2="620" x1="160.41666666666669" x2="160.41666666666669" stroke="var(--grid)" /><line y1="0" y2="620" x1="183.33333333333334" x2="183.33333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="206.25" x2="206.25" stroke="var(--grid)" /><line y1="0" y2="620" x1="229.16666666666669" x2="229.16666666666669" stroke="var(--grid)" /><line y1="0" y2="620" x1="252.08333333333334" x2="252.08333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="275" x2="275" stroke="var(--grid)" stroke-width="2"/><line y1="0" y2="620" x1="297.9166666666667" x2="297.9166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="320.83333333333337" x2="320.83333333333337" stroke="var(--grid)" /><line y1="0" y2="620" x1="343.75" x2="343.75" stroke="var(--grid)" /><line y1="0" y2="620" x1="366.6666666666667" x2="366.6666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="389.58333333333337" x2="389.58333333333337" stroke="var(--grid)" /><line y1="0" y2="620" x1="412.5" x2="412.5" stroke="var(--grid)" /><line y1="0" y2="620" x1="435.4166666666667" x2="435.4166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="458.33333333333337" x2="458.33333333333337" stroke="var(--grid)" /><line y1="0" y2="620" x1="481.25" x2="481.25" stroke="var(--grid)" /><line y1="0" y2="620" x1="504.1666666666667" x2="504.1666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="527.0833333333334" x2="527.0833333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="550" x2="550" stroke="var(--grid)" stroke-width="2"/><line y1="0" y2="620" x1="572.9166666666667" x2="572.9166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="595.8333333333334" x2="595.8333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="618.75" x2="618.75" stroke="var(--grid)" /><line y1="0" y2="620" x1="641.6666666666667" x2="641.6666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="664.5833333333334" x2="664.5833333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="687.5" x2="687.5" stroke="var(--grid)" /><line y1="0" y2="620" x1="710.4166666666667" x2="710.4166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="733.3333333333334" x2="733.3333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="756.25" x2="756.25" stroke="var(--grid)" /><line y1="0" y2="620" x1="779.1666666666667" x2="779.1666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="802.0833333333334" x2="802.0833333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="825" x2="825" stroke="var(--grid)" stroke-width="2"/><line y1="0" y2="620" x1="847.9166666666667" x2="847.9166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="870.8333333333334" x2="870.8333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="893.75" x2="893.75" stroke="var(--grid)" /><line y1="0" y2="620" x1="916.6666666666667" x2="916.6666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="939.5833333333334" x2="939.5833333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="962.5" x2="962.5" stroke="var(--grid)" /><line y1="0" y2="620" x1="985.4166666666667" x2="985.4166666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="1008.3333333333334" x2="1008.3333333333334" stroke="var(--grid)" /><line y1="0" y2="620" x1="1031.25" x2="1031.25" stroke="var(--grid)" /><line y1="0" y2="620" x1="1054.1666666666667" x2="1054.1666666666667" stroke="var(--grid)" /><line y1="0" y2="620" x1="1077.0833333333335" x2="1077.0833333333335" stroke="var(--grid)" /><line y1="0" y2="620" x1="1100" x2="1100" stroke="var(--grid)" stroke-width="2"/><rect x="3" y="506.75" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="3" y="351.75" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="3" y="235.5" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="278" y="313" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="278" y="158" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="278" y="390.5" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="553" y="235.5" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="553" y="80.5" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="553" y="313" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="828" y="506.75" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="828" y="351.75" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="828" y="235.5" width="246.08333333333334" height="32.75" rx="3" fill="var(--c-chords)" opacity=".55"/><rect x="2" y="80.5" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="47.833333333333336" y="196.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="93.66666666666667" y="80.5" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="139.5" y="196.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="162.41666666666669" y="119.25" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="185.33333333333334" y="196.75" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="254.08333333333334" y="235.5" width="64.75" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="322.83333333333337" y="119.25" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="345.75" y="119.25" width="64.75" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="414.5" y="196.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="437.4166666666667" y="119.25" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="483.25" y="119.25" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="552" y="158" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="597.8333333333334" y="41.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="620.75" y="158" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="643.6666666666667" y="235.5" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="666.5833333333334" y="119.25" width="64.75" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="735.3333333333334" y="41.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="758.25" y="235.5" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="781.1666666666667" y="41.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="804.0833333333334" y="80.5" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="849.9166666666667" y="41.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="872.8333333333334" y="196.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="895.75" y="119.25" width="64.75" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="964.5" y="80.5" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="987.4166666666667" y="41.75" width="18.916666666666668" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="1010.3333333333334" y="158" width="41.833333333333336" height="32.75" rx="3" fill="var(--c-melody)" opacity=".8"/><rect x="2" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="139.5" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="277" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="414.5" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="552" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="689.5" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="827" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="964.5" y="545.5" width="114.58333333333334" height="32.75" rx="3" fill="var(--c-bass)" opacity=".7"/><rect x="4" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="72.75" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="141.5" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="210.25" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="279" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="347.75" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="416.5" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="485.25" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="554" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="622.75" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="691.5" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="760.25" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="829" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="897.75" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="966.5" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/><rect x="1035.25" y="587.25" width="14.916666666666668" height="26.75" rx="3" fill="var(--c-drums)" opacity=".7"/></svg></div>
   <div class="wrap">
-    <div class="section-head">
-      <span class="eyebrow">What it does</span>
-      <h2>A composer that writes like a band and listens like an editor</h2>
-      <p>Each part follows what's already there, section by section, with the whole song in view. Everything it writes stays editable.</p>
+    <p class="eyebrow">Open-source AI music composer</p>
+    <h1>Describe a song. <em>Edit every note.</em></h1>
+    <p class="lede">Tell Claude what you want to hear. Tonefold writes chords, melody, bass and drums into a piano roll, plays them straight away, and lets you change any note. Export MIDI, a stereo mix or one WAV per layer.</p>
+    <div class="cta" id="cta">
+      <a class="btn dl dl-mac" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg" data-dl="mac">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 20h16"/></svg>
+        <span>Download for macOS</span></a>
+      <a class="btn dl dl-win" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip" data-dl="win">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 20h16"/></svg>
+        <span>Download for Windows</span></a>
+      <a class="btn mobile-only primary" href="#demo">Watch the demo</a>
+      <a class="btn" href="https://github.com/vkfolio/tonefold">View source</a>
     </div>
+    <p class="phone-note">Tonefold is a desktop app, so there is nothing to install on this device. Watch the demo below, or copy the release link for later.
+      <button class="btn sm" type="button" id="copylink" style="margin-top:12px;display:flex">Copy release link</button></p>
+    <p class="cta-note"><span>v1.4.0</span><span>Free, GPL-3.0</span><span>macOS 11+ universal</span><span>Windows 10/11</span></p>
+  </div>
+</section>
 
-
-    <figure class="shot" style="margin-bottom: 56px">
-      <img src="assets/editor.png" width="1600" height="929" alt="The Tonefold editor: song sections across the top, the composer chat on the left, a piano roll of chords in the middle and the layer list on the right." loading="lazy">
-      <figcaption>A song in progress: sections across the top, the composer on the left, the chords in the piano roll, every layer on the right.</figcaption>
+<section class="shot" aria-labelledby="shot-h" style="padding-bottom:0">
+  <div class="wrap">
+    <h2 id="shot-h" class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">The Tonefold editor</h2>
+    <figure>
+      <div class="frame"><img src="assets/editor.png" width="1600" height="929" alt="The Tonefold editor showing a song structure bar, the Claude chat composer, a piano roll with an F major chord progression, and layer cards for chords, melody and bass." fetchpriority="high"></div>
+      <figcaption>The Tonefold 1.4 editor, unedited screenshot: an F major song for kids, intro section, chords layer selected.</figcaption>
     </figure>
-
-    <div class="features">
-      <div class="feature">
-        <span class="tag">12 layer kinds</span>
-        <h3>Composes layer by layer</h3>
-        <p>Melody first? It fits chords to it. Chords first? It writes a melody over them. Bass, drums, pads, arps, plucks, counter-melodies, harmonies, sub and percussion follow.</p>
-      </div>
-      <div class="feature">
-        <span class="tag">humanize</span>
-        <h3>Plays like a person</h3>
-        <p>Repeats are new performances, not copies. Each style has its own groove and pocket, and sustained parts get swells, sustain pedal and 808 glides.</p>
-      </div>
-      <div class="feature">
-        <span class="tag">General MIDI</span>
-        <h3>Sounds right away</h3>
-        <p>A built-in synth means you hear the song before you choose a single instrument. Switch sounds per layer.</p>
-      </div>
-      <div class="feature">
-        <span class="tag">piano roll</span>
-        <h3>Edit by hand</h3>
-        <p>Draw, move and resize notes, set velocity, work in drum lanes and scrub the playhead. The composer sees your edits on its next turn.</p>
-      </div>
-      <div class="feature">
-        <span class="tag">.mid · .wav · stems</span>
-        <h3>Take it anywhere</h3>
-        <p>Export MIDI, a stereo mix and one WAV per layer, or drag a layer straight onto a track in your DAW.</p>
-      </div>
-      <div class="feature">
-        <span class="tag">CLAP · VST3</span>
-        <h3>Optional DAW plugin</h3>
-        <p>The same composer runs inside your DAW, follows its transport and sends live MIDI to your instruments. Tested in FL Studio.</p>
-      </div>
+    <div class="callouts">
+      <div><b><i style="background:var(--c-chords)"></i>Composer chat</b><span>Describe a melody, mood or change in plain language.</span></div>
+      <div><b><i style="background:var(--c-melody)"></i>Piano roll</b><span>Draw, move and resize notes. Click the keys to hear them.</span></div>
+      <div><b><i style="background:var(--c-bass)"></i>Layers</b><span>Mute, lock or drag any layer out as MIDI.</span></div>
+      <div><b><i style="background:var(--c-drums)"></i>Song structure</b><span>Sections with bars and a role, from intro to outro.</span></div>
     </div>
   </div>
 </section>
 
-<section class="rule" id="producer">
-  <div class="wrap producer">
+<section class="demo" id="demo" aria-labelledby="demo-h">
+  <div class="wrap">
+    <div class="demo-head">
+      <div><p class="eyebrow">Demo, 5:38</p><h2 id="demo-h">Watch a song get written</h2></div>
+      <p class="lede">The best way to see what it does: a screen recording of the composer at work, 5 minutes 38 seconds.</p>
+    </div>
+    <div class="video" id="video">
+      <button class="facade" type="button" aria-label="Play video: Tonefold demo, 5 minutes 38 seconds">
+        <img src="https://i.ytimg.com/vi/Ikx8j3tw9MI/maxresdefault.jpg" alt="" loading="lazy" id="vthumb">
+        <span class="scrim"></span>
+        <span class="play"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg></span>
+        <span class="dur"><span>Tonefold demo</span><span>5:38</span></span>
+      </button>
+    </div>
+    <p class="demo-cap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+      <span>Recorded before Tonefold was renamed from FLVSTX, so the app in the video is called FLVSTX and runs inside FL Studio as a plugin. Tonefold now also runs as a standalone app. Loads from YouTube only when you press play.</span></p>
+  </div>
+</section>
+
+<section id="features" aria-labelledby="feat-h">
+  <div class="wrap feat">
+    <div class="sticky">
+      <p class="eyebrow">What it does</p>
+      <h2 id="feat-h">A composer that works in layers, like you do</h2>
+      <p class="lede" style="margin-top:20px">Every part lives on its own layer and section, so you can ask for a new bass line, lock the chords you like and keep going. Whatever exists shapes what gets written next.</p>
+      <figure class="arr">
+        <svg viewBox="0 0 344 206" role="img" aria-label="A grid of six layers across five song sections, with note blocks showing which layers play in which section"><text x="92" y="14" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="var(--mono)">intro</text><text x="148" y="14" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="var(--mono)">verse</text><text x="204" y="14" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="var(--mono)">chorus</text><text x="260" y="14" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="var(--mono)">bridge</text><text x="316" y="14" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="var(--mono)">outro</text><text x="0" y="44" font-size="11" fill="var(--text)" font-family="var(--mono)">chords</text><rect x="66" y="28" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="74.93694133590907" y="38" width="10" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="83.99028523801826" y="32" width="11" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="91.94915714068338" y="44" width="11" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="99.23625120171346" y="32" width="10" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="108.6983514726162" y="44" width="6" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="122" y="28" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="129.6267249721568" y="32" width="12" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="137.07617670716718" y="32" width="6" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="147.2436947945971" y="44" width="8" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="157.94855484832078" y="32" width="9" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="166.0749475879129" y="38" width="10" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="178" y="28" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="184.7868897630833" y="38" width="10" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="195.093012197176" y="38" width="11" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="203.15033837594092" y="44" width="7" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="213.85282518039457" y="38" width="8" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="222.38742695609108" y="32" width="13" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="234" y="28" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="240.2952529184986" y="44" width="6" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="250.00244706775993" y="38" width="9" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="258.4387210251298" y="44" width="6" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="268.90452669141814" y="44" width="11" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="278.2378817202989" y="32" width="12" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="290" y="28" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="297.1625454612076" y="44" width="9" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="305.77399201947264" y="32" width="12" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="314.3646489013918" y="38" width="8" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="325.30398027715273" y="38" width="10" height="4" rx="1.5" fill="var(--c-chords)"/><rect x="333.16451498214155" y="44" width="11" height="4" rx="1.5" fill="var(--c-chords)"/><text x="0" y="74" font-size="11" fill="var(--text)" font-family="var(--mono)">melody</text><rect x="66" y="58" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="122" y="58" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="130.2215458115097" y="68" width="12" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="138.5252372524701" y="68" width="12" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="147.86156602413394" y="68" width="13" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="157.48321224562824" y="74" width="13" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="166.9960776164662" y="74" width="6" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="178" y="58" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="185.38625478977337" y="62" width="6" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="193.01365319197066" y="68" width="13" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="202.44981329422444" y="68" width="6" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="213.83161172061227" y="68" width="7" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="222.56011801911518" y="68" width="12" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="234" y="58" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="242.7496810297016" y="74" width="12" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="250.4708687737584" y="68" width="11" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="260.4019726726692" y="74" width="12" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="268.32815442653373" y="68" width="8" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="277.88893421483226" y="68" width="7" height="4" rx="1.5" fill="var(--c-melody)"/><rect x="290" y="58" width="52" height="26" rx="5" fill="var(--surface)"/><text x="0" y="104" font-size="11" fill="var(--text)" font-family="var(--mono)">bass</text><rect x="66" y="88" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="122" y="88" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="129.75419504661113" y="104" width="7" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="138.75981116271578" y="104" width="12" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="146.9617084353231" y="92" width="9" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="156.95658045099117" y="98" width="8" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="166.49472624249756" y="92" width="6" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="178" y="88" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="186.80980958859436" y="104" width="6" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="193.63602080056444" y="92" width="12" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="204.88295025308616" y="92" width="12" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="213.2234522467479" y="92" width="13" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="220.5816923098173" y="98" width="9" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="234" y="88" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="290" y="88" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="296.0150064411573" y="98" width="7" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="305.16668391996063" y="98" width="6" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="314.77256762608886" y="104" width="6" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="325.8186655889731" y="98" width="13" height="4" rx="1.5" fill="var(--c-bass)"/><rect x="332.33505570935085" y="92" width="13" height="4" rx="1.5" fill="var(--c-bass)"/><text x="0" y="134" font-size="11" fill="var(--text)" font-family="var(--mono)">drums</text><rect x="66" y="118" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="73.89237069454975" y="128" width="11" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="83.05995649192482" y="134" width="7" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="91.14691222063266" y="134" width="9" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="100.56598409777507" y="128" width="8" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="110.74330511153676" y="122" width="13" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="122" y="118" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="128.6461383011192" y="134" width="11" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="137.8417658477556" y="122" width="10" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="147.97725538397208" y="134" width="7" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="157.89998553250916" y="122" width="11" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="164.76679959427565" y="128" width="7" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="178" y="118" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="184.95618996559642" y="122" width="13" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="194.18760321242735" y="134" width="13" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="203.46497986861505" y="122" width="11" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="211.29403667151928" y="122" width="9" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="220.32718661311083" y="122" width="6" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="234" y="118" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="242.52617611410096" y="122" width="9" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="251.80478349071927" y="134" width="8" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="259.82943420577794" y="128" width="7" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="267.7257597518619" y="134" width="6" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="278.28333096345887" y="128" width="10" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="290" y="118" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="298.94929432705976" y="128" width="10" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="307.8821047935635" y="122" width="8" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="314.1660583324265" y="122" width="9" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="325.1791998730041" y="122" width="9" height="4" rx="1.5" fill="var(--c-drums)"/><rect x="333.9395301484037" y="128" width="10" height="4" rx="1.5" fill="var(--c-drums)"/><text x="0" y="164" font-size="11" fill="var(--text)" font-family="var(--mono)">pad</text><rect x="66" y="148" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="122" y="148" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="178" y="148" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="185.83481444325298" y="164" width="9" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="193.1393240483012" y="152" width="6" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="203.1281555253081" y="164" width="8" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="212.7642130407039" y="152" width="10" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="220.15131900087" y="152" width="9" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="234" y="148" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="240.28826877730899" y="164" width="9" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="250.12729994254187" y="152" width="8" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="259.2758460652549" y="164" width="6" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="267.0280365133658" y="152" width="11" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="278.7875067105051" y="152" width="13" height="4" rx="1.5" fill="var(--c-pad)"/><rect x="290" y="148" width="52" height="26" rx="5" fill="var(--surface)"/><text x="0" y="194" font-size="11" fill="var(--text)" font-family="var(--mono)">arp</text><rect x="66" y="178" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="122" y="178" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="130.84710169350728" y="194" width="13" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="137.22690710634924" y="194" width="9" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="146.4431805294007" y="182" width="13" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="156.44566616858356" y="182" width="13" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="164.25230653816834" y="188" width="9" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="178" y="178" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="185.3167849064339" y="188" width="9" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="194.3064793376252" y="188" width="11" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="202.2948061057832" y="194" width="9" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="213.3312465096824" y="194" width="13" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="222.89008228876628" y="182" width="9" height="4" rx="1.5" fill="var(--c-arp)"/><rect x="234" y="178" width="52" height="26" rx="5" fill="var(--surface)"/><rect x="290" y="178" width="52" height="26" rx="5" fill="var(--surface)"/></svg>
+        <figcaption>Schematic of the layers by sections arrangement grid. Illustration, not a real session.</figcaption>
+      </figure>
+    </div>
+    <div class="rows">
+      <article class="row" style="--c:var(--c-chords)"><span class="mk"></span><div><h3>Eleven layer kinds, all editable</h3><p>Chords, melody, bass and drums, plus pads, arpeggios, plucks, counter-melody, harmony, sub and percussion. Each one is plain notes in a piano roll with a velocity lane and drum lanes.</p></div></article>
+      <article class="row" style="--c:var(--c-melody)"><span class="mk"></span><div><h3>You hear it at once</h3><p>A built-in General MIDI synth (GeneralUser GS) plays the song before you pick a single instrument. Export MIDI, a stereo WAV mix and per-layer stems.</p></div></article>
+      <article class="row" style="--c:var(--c-bass)"><span class="mk"></span><div><h3>It plays like a person</h3><p>Repeats are new performances, not copies. Each style has its own groove, sustained parts swell, the sustain pedal is used, and 808 bass glides.</p></div></article>
+      <article class="row" style="--c:var(--c-drums)"><span class="mk"></span><div><h3>Plans before it writes</h3><p>In Producer mode you see the plan, with the key, tempo, form and the exact <code>layer@section</code> each step touches, and nothing is written until you approve. <a href="#producer" style="color:var(--accent-text)">How that works</a>.</p></div></article>
+      <article class="row" style="--c:var(--c-pad)"><span class="mk"></span><div><h3>Works without the cloud</h3><p>Generation, playback, editing and export run on your machine. Only the chat uses a model: your own Claude login through Claude Code, or an Ollama model on this PC or your network.</p></div></article>
+      <article class="row" style="--c:var(--c-arp)"><span class="mk"></span><div><h3>Reaches your DAW and your agents</h3><p>An optional CLAP/VST3 plugin runs the same composer inside a DAW (FL Studio is the tested host). A CLI and a skill file let Claude Code or Codex compose too.</p></div></article>
+    </div>
+  </div>
+</section>
+
+<section class="flow-sec" id="producer" aria-labelledby="prod-h">
+  <div class="wrap">
+    <div class="flow-head">
+      <p class="eyebrow">Producer mode</p>
+      <h2 id="prod-h">Nothing is written until you approve the plan</h2>
+      <p class="lede" style="margin-top:20px">A producer agent reads the session and proposes the work. You approve it. Then four specialists each write only their own layers. The approval is enforced by the app, not by a prompt.</p>
+    </div>
+    <div class="flow" role="group" aria-label="Producer mode flow: plan, approval, four specialists, check and revert">
+      <div class="stage">
+        <span class="tag">Step 1 / Producer</span>
+        <h3>Reads the session, proposes a plan</h3>
+        <div class="plan" aria-label="Example plan">
+          <span class="l"><span class="k">key</span> <b>F major</b></span>
+          <span class="l"><span class="k">tempo</span> <b>112</b></span>
+          <span class="l"><span class="k">form</span> <b>intro, verse, outro</b></span>
+          <span class="l"><span class="c1">chords</span>@verse</span>
+          <span class="l"><span class="c2">melody</span>@verse</span>
+          <span class="l"><span class="c3">bass</span>@verse</span>
+          <span class="l"><span class="c4">drums</span>@intro</span>
+        </div>
+        <p>Example shape of a plan. Every step names exactly the layers and sections it will touch.</p>
+      </div>
+      <div class="join" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5l8 7-8 7z"/></svg></div>
+      <div class="stage gate">
+        <svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+        <span class="tag">Step 2 / You</span>
+        <h3>Approve, or change it</h3>
+        <p>The host refuses writes until you say yes.</p>
+      </div>
+      <div class="join" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5l8 7-8 7z"/></svg></div>
+      <div class="stage specs">
+        <span class="tag">Step 3 / Specialists</span>
+        <div class="spec" style="--c:var(--c-chords)"><i></i><span>Harmony &amp; form<small>writes its own layers only</small></span></div>
+        <div class="spec" style="--c:var(--c-melody)"><i></i><span>Melody &amp; topline<small>writes its own layers only</small></span></div>
+        <div class="spec" style="--c:var(--c-bass)"><i></i><span>Rhythm section<small>writes its own layers only</small></span></div>
+        <div class="spec" style="--c:var(--c-pad)"><i></i><span>Arrangement &amp; mix<small>writes its own layers only</small></span></div>
+      </div>
+      <div class="join" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 5l8 7-8 7z"/></svg></div>
+      <div class="stage">
+        <span class="tag">Step 4 / Check</span>
+        <h3>Producer audits the ledger</h3>
+        <div class="ledger">
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>what the host recorded</span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>checked against the plan</span>
+        </div>
+        <span class="revert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/></svg>Revert the whole run</span>
+      </div>
+    </div>
+    <p class="flow-foot">The producer trusts the host's ledger of what actually landed, not the specialists' own account of it. Composer mode is still there for quick one-off changes.</p>
+  </div>
+</section>
+
+<section id="architecture" aria-labelledby="arch-h">
+  <div class="wrap">
+    <p class="eyebrow">Architecture</p>
+    <h2 id="arch-h">A native app, a local socket, your choice of model</h2>
+    <p class="lede" style="margin-top:20px">The app and its sound engine are native Rust. The composer is a small Node.js sidecar built on the Claude Agent SDK, talking to the app over a WebSocket on your own machine.</p>
+    <div class="arch" role="group" aria-label="Architecture diagram: Tonefold app connects over a local WebSocket to the agent sidecar, which connects to Claude or Ollama">
+      <div class="node hl">
+        <span class="tag">Native Rust</span>
+        <h3>Tonefold app</h3>
+        <ul><li>Piano roll and song state</li><li>Built-in GM synth and playback</li><li>Approval gate and run ledger</li></ul>
+      </div>
+      <div class="wire"><svg class="l" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5l-8 7 8 7z"/></svg><span>local<br>WebSocket</span><svg class="r" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 5l8 7-8 7z"/></svg></div>
+      <div class="node">
+        <span class="tag">Node.js 20+ sidecar</span>
+        <h3>Claude Agent SDK</h3>
+        <p>Runs the composer, producer and the four specialists, with tools that read and write the session.</p>
+      </div>
+      <div class="wire"><svg class="l" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5l-8 7 8 7z"/></svg><span>model<br>calls</span><svg class="r" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 5l8 7-8 7z"/></svg></div>
+      <div class="llms">
+        <div class="node"><span class="tag">Cloud</span><h3>Claude</h3><p>Your own login through Claude Code.</p></div>
+        <div class="node"><span class="tag">Local or LAN</span><h3>Ollama</h3><p>A model on this PC or across the room.</p></div>
+      </div>
+    </div>
+    <div class="arch-sub">
+      <div class="node dash"><span class="tag">Out of the app</span><h3>Exports</h3><p>Produced on your machine, offline.</p><div class="chips"><span class="chip">.mid</span><span class="chip">mix .wav</span><span class="chip">stems .wav</span></div></div>
+      <div class="node dash"><span class="tag">Optional</span><h3>DAW plugin</h3><p>The same composer inside your DAW. FL Studio is the tested host.</p><div class="chips"><span class="chip">Tonefold.clap</span><span class="chip">Tonefold.vst3</span></div></div>
+      <div class="node dash"><span class="tag">Optional</span><h3>CLI and skill file</h3><p>Let Claude Code or Codex compose through <code class="inline-code">tonefold-cli</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="install" id="install" aria-labelledby="inst-h">
+  <div class="wrap inst-grid">
     <div>
-      <div class="section-head" style="margin-bottom: 28px">
-        <span class="eyebrow">Producer mode</span>
-        <h2>It shows you the plan before it writes</h2>
-        <p>For bigger changes, the producer reads your session and proposes a plan: key, tempo, form, and exactly which layer in which section each step will touch. Nothing changes until you approve it.</p>
+      <p class="eyebrow">Install</p>
+      <h2 id="inst-h">Download, open, compose</h2>
+      <p class="lede" style="margin-top:20px">One download per platform. No account, no installer wizard. Add the DAW plugins only if you want them.</p>
+      <div class="dls">
+        <a class="btn dl dl-mac" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Tonefold-macOS.dmg</a>
+        <a class="btn dl dl-win" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Tonefold-Windows.zip</a>
       </div>
-      <div class="points">
-        <div>
-          <h3>Four specialists, each in their own lane</h3>
-          <p>Harmony and form, melody and topline, rhythm section, arrangement and mix. Each one can only write its own layers, so a step can't quietly rewrite your melody.</p>
-        </div>
-        <div>
-          <h3>Approval is enforced by the app</h3>
-          <p>Approving isn't a polite request in a prompt. Until you press Approve, the producer can't run any tool that writes.</p>
-        </div>
-        <div>
-          <h3>One click to undo a whole run</h3>
-          <p>A producer run makes more changes than undo can hold, so the session is marked first and Revert puts everything back.</p>
-        </div>
+      <p style="margin-top:16px;color:var(--muted);font-size:15px"><a href="https://github.com/vkfolio/tonefold/releases/latest" style="color:var(--accent-text)">All releases and notes</a></p>
+    </div>
+    <div>
+      <div class="tabs" role="tablist" aria-label="Operating system">
+        <button type="button" role="tab" id="tab-mac" aria-controls="p-mac" aria-selected="true">macOS</button>
+        <button type="button" role="tab" id="tab-win" aria-controls="p-win" aria-selected="false" tabindex="-1">Windows</button>
       </div>
-    </div>
-
-    <div class="plan" aria-label="Example producer plan">
-      <div class="plan-top">
-        <strong>Plan: lo-fi song, verse → chorus → bridge</strong>
-        <span>D minor · 84 BPM · intro 4 · verse 8 · chorus 8 · bridge 4</span>
-      </div>
-      <ol>
-        <li><span>Set the form and the progressions</span><span class="who">harmony</span><code>chords@verse</code></li>
-        <li><span>Lift the chorus a fourth, same rhythm</span><span class="who">harmony</span><code>chords@chorus</code></li>
-        <li><span>Topline with a hook on bar 1</span><span class="who">melody</span><code>melody@chorus</code></li>
-        <li><span>Root bass, pushes on the 4-and</span><span class="who">rhythm</span><code>bass@verse</code></li>
-        <li><span>Lazy kit, ghost snares in the verse</span><span class="who">rhythm</span><code>drums@verse</code></li>
-        <li><span>Thin the bridge to pad and sub</span><span class="who">arrangement</span><code>pad@bridge</code></li>
-      </ol>
-      <div class="plan-actions" aria-hidden="true"><span>Approve</span><span>Revise</span><span>Stop</span></div>
-    </div>
-  </div>
-</section>
-
-<section class="rule" id="how">
-  <div class="wrap">
-    <div class="section-head">
-      <span class="eyebrow">How it works</span>
-      <h2>A native app with an agent beside it</h2>
-      <p>The editor, generators and synth are Rust and run without the internet. The composer is a small Node sidecar built on the Claude Agent SDK. It edits your session only through the app's tools.</p>
-    </div>
-
-    <div class="flow-wrap">
-      <svg class="flow" viewBox="0 0 960 250" role="img" aria-label="Diagram: the Tonefold app or DAW plugin talks over a local WebSocket to the composer sidecar, which uses Claude or an Ollama model. The app exports MIDI, WAV and stems.">
-        <defs>
-          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0 0L10 5L0 10z"/></marker>
-        </defs>
-        <rect class="box-accent" x="20" y="40" width="250" height="110" rx="10"/>
-        <text x="40" y="72" font-size="17" font-weight="600">Tonefold app</text>
-        <text class="sub" x="40" y="96">piano roll · generators</text>
-        <text class="sub" x="40" y="114">humanizer · GM synth</text>
-        <text class="sub" x="40" y="132">Rust · runs offline</text>
-
-        <rect class="box" x="20" y="180" width="250" height="50" rx="10" stroke-dasharray="5 4"/>
-        <text x="40" y="211" font-size="14">CLAP / VST3 in your DAW</text>
-        <text class="sub" x="196" y="211">optional</text>
-        <path class="wire-dash" d="M145 150 V180"/>
-
-        <path class="wire" d="M270 95 H370" marker-end="url(#ah)" marker-start="url(#ah)"/>
-        <text class="sub" x="282" y="84">WebSocket</text>
-        <text class="sub" x="282" y="118">localhost</text>
-
-        <rect class="box" x="370" y="40" width="250" height="110" rx="10"/>
-        <text x="390" y="72" font-size="17" font-weight="600">Composer sidecar</text>
-        <text class="sub" x="390" y="96">Claude Agent SDK</text>
-        <text class="sub" x="390" y="114">composer · producer</text>
-        <text class="sub" x="390" y="132">4 fenced specialists</text>
-
-        <path class="wire" d="M620 75 H720" marker-end="url(#ah)"/>
-        <path class="wire" d="M620 120 H720" marker-end="url(#ah)"/>
-        <rect class="box" x="720" y="40" width="220" height="56" rx="10"/>
-        <text x="740" y="73" font-size="15" font-weight="600">Claude</text>
-        <text class="sub" x="820" y="73">your login</text>
-        <rect class="box" x="720" y="104" width="220" height="56" rx="10"/>
-        <text x="740" y="137" font-size="15" font-weight="600">Ollama</text>
-        <text class="sub" x="820" y="137">local or LAN</text>
-
-        <path class="wire" d="M270 205 H370" marker-end="url(#ah)"/>
-        <rect class="box" x="370" y="180" width="250" height="50" rx="10"/>
-        <text x="390" y="211" font-size="14">Export</text>
-        <text class="sub" x="450" y="211">.mid · mix .wav · stems</text>
-      </svg>
-    </div>
-
-    <div class="flow-notes">
-      <p><strong>Works without the composer.</strong> Generation, playback, editing and export need neither Node nor a model. The composer is there when you want to talk to it.</p>
-      <p><strong>Your choice of model.</strong> Use your Claude login, or run on an Ollama model on this PC or another machine on your network. Each keeps its own conversation.</p>
-      <p><strong>Drive it from outside.</strong> A command-line tool and a skill file let Claude Code, Claude Desktop or Codex compose Tonefold songs too.</p>
-    </div>
-  </div>
-</section>
-
-<section class="rule" id="install">
-  <div class="wrap">
-    <div class="section-head">
-      <span class="eyebrow">Install</span>
-      <h2>Download, open, compose</h2>
-      <p>The app is all you need. Plugins for your DAW are an optional extra on both systems.</p>
-    </div>
-    <div class="install">
-      <div class="platform">
-        <h3>macOS <span class="mono">11+ · Apple Silicon and Intel</span></h3>
+      <div class="panel" id="p-mac" role="tabpanel" aria-labelledby="tab-mac">
+        <p class="eyebrow" style="display:none"></p>
         <ol class="steps">
-          <li><div style="min-width:0"><h4>Download the disk image</h4><p><a href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Tonefold-macOS.dmg</a>, then drag Tonefold into Applications.</p></div></li>
-          <li><div style="min-width:0"><h4>Open it the first time</h4><p>This build isn't notarized by Apple yet. On macOS 15 and later, open System Settings → Privacy &amp; Security and click <b>Open Anyway</b>. On earlier versions, right-click the app and choose Open.</p></div></li>
-          <li><div style="min-width:0"><h4>Optional: DAW plugins</h4><p>Copy Tonefold.clap and Tonefold.vst3 from the disk image's DAW plugins folder into <code>~/Library/Audio/Plug-Ins</code>.</p></div></li>
+          <li><div><h3>Drag Tonefold to Applications</h3><p>Open the .dmg. One universal build covers Apple Silicon and Intel, macOS 11 or later.</p></div></li>
+          <li><div><h3>Open it the first time</h3><p>The app is not notarized yet, so macOS asks before it runs. On macOS 15 and later, go to System Settings, Privacy &amp; Security, and click <b>Open Anyway</b>. On older versions, right-click the app, choose <b>Open</b>, then <b>Open</b> again.</p></div></li>
+          <li><div><h3>Optional: DAW plugins</h3><p>Copy <code class="inline-code">Tonefold.clap</code> and <code class="inline-code">Tonefold.vst3</code> from the dmg's "DAW plugins" folder.</p>
+            <div class="code"><pre><code>~/Library/Audio/Plug-Ins/CLAP
+~/Library/Audio/Plug-Ins/VST3</code></pre><button class="copy" type="button" data-copy="~/Library/Audio/Plug-Ins/CLAP&#10;~/Library/Audio/Plug-Ins/VST3" aria-label="Copy plugin folder paths">Copy</button></div></div></li>
         </ol>
       </div>
-      <div class="platform">
-        <h3>Windows <span class="mono">10 and 11</span></h3>
+      <div class="panel" id="p-win" role="tabpanel" aria-labelledby="tab-win">
         <ol class="steps">
-          <li><div style="min-width:0"><h4>Download and unzip</h4><p><a href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Tonefold-Windows.zip</a>, unzipped anywhere.</p></div></li>
-          <li><div style="min-width:0"><h4>Run the installer</h4><p>No administrator prompt. Then start Tonefold from the Start Menu.</p>
-            <div class="code"><pre><code id="cmd-install">powershell -ExecutionPolicy Bypass -File scripts\install.ps1</code></pre><button class="copy" type="button" data-copy="cmd-install">Copy</button></div></div></li>
-          <li><div style="min-width:0"><h4>Optional: DAW plugins</h4><p>Add <code>-Plugins</code> to install the CLAP and VST3 (one administrator prompt).</p>
-            <div class="code"><pre><code id="cmd-plugins">powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins</code></pre><button class="copy" type="button" data-copy="cmd-plugins">Copy</button></div></div></li>
+          <li><div><h3>Unzip the download</h3><p>Anywhere you like. Windows 10 or 11.</p></div></li>
+          <li><div><h3>Run the installer script</h3><p>It installs under <code class="inline-code">%LOCALAPPDATA%\Tonefold</code> with no administrator prompt, and adds a Start Menu entry.</p>
+            <div class="code"><pre><code>powershell -ExecutionPolicy Bypass -File scripts\install.ps1</code></pre><button class="copy" type="button" data-copy="powershell -ExecutionPolicy Bypass -File scripts\install.ps1" aria-label="Copy install command">Copy</button></div></div></li>
+          <li><div><h3>Optional: DAW plugins</h3><p>Add <code class="inline-code">-Plugins</code> to install the CLAP and VST3 too. This asks for administrator rights once.</p>
+            <div class="code"><pre><code>powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins</code></pre><button class="copy" type="button" data-copy="powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Plugins" aria-label="Copy install command with plugins">Copy</button></div></div></li>
         </ol>
       </div>
+      <p class="req"><b>For the chat composer:</b> Node.js 20 or later and Claude Code signed in, or an Ollama server. Generation, playback, editing and export work without either.</p>
     </div>
-    <p class="install-note">For the chat composer, install <a href="https://nodejs.org/">Node.js 20+</a> and sign in to Claude Code, or point Tonefold at an Ollama server. FL Studio is the tested DAW; other CLAP/VST3 hosts should work, and <a href="https://github.com/vkfolio/tonefold/issues">reports are welcome</a>. Prefer to build it yourself? See <a href="https://github.com/vkfolio/tonefold#building-from-source">building from source</a>.</p>
   </div>
 </section>
 
-<section class="rule" id="faq">
-  <div class="wrap oss">
-    <div class="oss-copy">
-      <span class="eyebrow">Open source</span>
-      <h2 class="h2">Free, GPL-3.0, built in the open</h2>
-      <p>The engine, the app, the plugin and the composer's prompts are all in the repository. Bug reports, genre knowledge and new generators are welcome.</p>
-      <div class="links">
-        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold">Source</a>
-        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/docs/tutorial-twinkle.md">Tutorial</a>
-        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/docs/usage.md">Reference</a>
-        <a class="btn btn-ghost btn-sm" href="https://github.com/vkfolio/tonefold/blob/main/CONTRIBUTING.md">Contribute</a>
+<section id="open-source" aria-labelledby="os-h">
+  <div class="wrap os-grid">
+    <div>
+      <p class="eyebrow">Open source</p>
+      <h2 id="os-h">Read it, run it, change it</h2>
+      <p class="lede" style="margin-top:20px">Tonefold is GPL-3.0 and developed in the open. The licence covers the code, not the music you make with it. Bug reports, ideas and pull requests are welcome.</p>
+      <div class="proof">
+        <span class="pill"><i></i>GPL-3.0</span><span class="pill"><i></i>Built on the Claude Agent SDK</span><span class="pill"><i></i>Native Rust</span>
       </div>
     </div>
-
-    <div>
-      <details>
-        <summary>Do I need a DAW?</summary>
-        <p>No. The app composes, plays and exports on its own. The DAW plugin is optional, for people who want the composer next to their own instruments.</p>
-      </details>
-      <details>
-        <summary>What does it cost?</summary>
-        <p>Tonefold is free. The chat composer uses your own Claude login, so any cost is whatever your Claude plan charges, shown per turn in the app. With Ollama it costs nothing beyond your hardware.</p>
-      </details>
-      <details>
-        <summary>Can it run without the cloud?</summary>
-        <p>Yes. Everything except the chat composer runs offline, and the composer can use an Ollama model on your own PC or another machine on your network.</p>
-      </details>
-      <details>
-        <summary>Does it run on my Mac?</summary>
-        <p>Yes, on macOS 11 or later, as one download for both Apple Silicon and Intel Macs. The plugins run in Mac DAWs that load CLAP or VST3; an Audio Unit version is on the roadmap.</p>
-      </details>
-      <details>
-        <summary>Who owns what I make?</summary>
-        <p>You do. The GPL covers Tonefold's code, not the songs you make with it, and Tonefold claims nothing over them.</p>
-      </details>
+    <div class="links">
+      <a href="https://github.com/vkfolio/tonefold"><span>Source on GitHub<small>vkfolio/tonefold</small></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg></a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/docs/tutorial-twinkle.md"><span>Tutorial: a whole song<small>From an empty project to a finished track</small></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg></a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/docs/usage.md"><span>Usage reference<small>Editor, layers, Ollama, plugin routing</small></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg></a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/CONTRIBUTING.md"><span>Contributing<small>Build from source and send a pull request</small></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg></a>
+      <a href="https://github.com/vkfolio/tonefold/discussions"><span>Discussions<small>Ideas, questions and votes</small></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M8 7h9v9"/></svg></a>
     </div>
   </div>
 </section>
+
+<section id="faq" aria-labelledby="faq-h" style="padding-top:0">
+  <div class="wrap faq-grid">
+    <div><p class="eyebrow">FAQ</p><h2 id="faq-h">Questions producers ask</h2></div>
+    <div class="faq">
+      <details><summary>Do I need a DAW?</summary><p>No. Tonefold is a standalone app with its own piano roll, synth and export. The CLAP/VST3 plugin is optional, for when you want the composer inside a DAW.</p></details>
+      <details><summary>What does it cost?</summary><p>The app is free. The chat composer uses your own Claude plan through Claude Code, and the app shows the cost of each turn. If you run it on an Ollama model instead, that is free too.</p></details>
+      <details><summary>Does it work offline?</summary><p>Generation, playback, editing and export all run on your machine. Only the chat composer needs a model, and that can be a local or LAN Ollama server, so nothing has to leave your network.</p></details>
+      <details><summary>Does it run on a Mac?</summary><p>Yes. There is one universal download for Apple Silicon and Intel, on macOS 11 or later. An Audio Unit build is on the roadmap. Today the optional plugins are CLAP and VST3.</p></details>
+      <details><summary>Who owns the music?</summary><p>You do. The GPL covers Tonefold's code, not the songs you make with it. The built-in sounds are GeneralUser GS by S. Christian Collins.</p></details>
+      <details><summary>Why does macOS warn me when I open it?</summary><p>The build is not notarized by Apple yet. Use Open Anyway in System Settings, or right-click and Open on older macOS. The install steps above cover it.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="closing" aria-labelledby="close-h">
+  <div class="wrap">
+    <h2 id="close-h">Try it on your next idea</h2>
+    <div class="cta" style="margin:0">
+      <a class="btn dl dl-mac" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-macOS.dmg">Download for macOS</a>
+      <a class="btn dl dl-win" href="https://github.com/vkfolio/tonefold/releases/latest/download/Tonefold-Windows.zip">Download for Windows</a>
+    </div>
+  </div>
+</section>
+</main>
 
 <footer>
-  <div class="wrap">
-    <div class="row">
-      <a class="brand" href="#top"><img src="assets/logo.svg" alt="">Tonefold</a>
-      <a href="https://github.com/vkfolio/tonefold">GitHub</a>
-      <a href="https://github.com/vkfolio/tonefold/releases">Releases</a>
-      <a href="https://github.com/vkfolio/tonefold/blob/main/CHANGELOG.md">Changelog</a>
-      <a href="https://github.com/vkfolio/tonefold/blob/main/LICENSE">Licence</a>
-      <button class="theme-toggle" id="theme" type="button">Theme: system</button>
+  <div class="wrap foot">
+    <div>
+      <a class="brand" href="#top"><img src="assets/logo.svg" width="28" height="28" alt="">Tonefold</a>
+      <p>FL Studio is a trademark of Image-Line Software. Claude is a trademark of Anthropic. Tonefold is an independent project, not affiliated with or endorsed by either. Built-in sounds: GeneralUser GS by S. Christian Collins.</p>
+      <p style="margin-top:10px">Tonefold 1.4.0, released under the GPL-3.0.</p>
     </div>
-    <p>FL Studio is a trademark of Image-Line Software. Claude is a trademark of Anthropic. Tonefold is an independent project, not affiliated with or endorsed by either. Built-in sounds: GeneralUser GS by S. Christian Collins.</p>
+    <nav aria-label="Footer">
+      <a href="https://github.com/vkfolio/tonefold">GitHub</a>
+      <a href="https://github.com/vkfolio/tonefold/releases/latest">Releases</a>
+      <a href="https://github.com/vkfolio/tonefold/discussions">Discussions</a>
+      <a href="https://github.com/vkfolio/tonefold/blob/main/docs/usage.md">Docs</a>
+    </nav>
   </div>
 </footer>
 
 <script>
-(() => {
-  // The sketch: four bars in 16ths. Pitched notes are [midi, start, length]; drums are [row, start].
-  const BPM = 84, STEPS = 64, STEP = 60 / BPM / 4;
-  const chords = [[62,0,16],[65,0,16],[69,0,16],[62,16,16],[65,16,16],[70,16,16],[60,32,16],[65,32,16],[69,32,16],[60,48,16],[64,48,16],[67,48,16]];
-  const melody = [[69,0,4],[65,4,2],[67,6,2],[69,8,6],[74,16,4],[72,20,2],[70,22,2],[69,24,8],[72,32,3],[69,35,3],[65,38,2],[69,40,4],[72,44,4],[76,48,4],[74,52,4],[72,56,2],[64,58,6]];
-  const bass = [];
-  [38, 34, 41, 36].forEach((r, b) => bass.push([r, b*16, 6], [r, b*16+6, 2], [r+12, b*16+10, 2], [r, b*16+12, 4]));
-  const drums = [];
-  for (let b = 0; b < 4; b++) {
-    drums.push([0, b*16], [0, b*16+10], [1, b*16+4], [1, b*16+12]);
-    for (let s = 0; s < 16; s += 2) drums.push([2, b*16+s]);
-  }
-  const lanes = [
-    { name: "chords", c: "--lane-chords", notes: chords },
-    { name: "melody", c: "--lane-melody", notes: melody },
-    { name: "bass", c: "--lane-bass", notes: bass },
-    { name: "drums", c: "--lane-drums", notes: drums, drum: true },
-  ];
-
-  const roll = document.getElementById("roll");
-  const els = [];
-  for (const lane of lanes) {
-    const name = document.createElement("div");
-    name.className = "lane-name";
-    name.style.setProperty("--c", `var(${lane.c})`);
-    name.textContent = lane.name;
-    const row = document.createElement("div");
-    row.className = "lane";
-    const pitches = lane.drum ? [0, 1, 2] : lane.notes.map(n => n[0]);
-    const lo = Math.min(...pitches), hi = Math.max(...pitches);
-    const span = Math.max(hi - lo, 1);
-    for (const n of lane.notes) {
-      const el = document.createElement("div");
-      el.className = "note";
-      el.style.setProperty("--c", `var(${lane.c})`);
-      const start = lane.drum ? n[1] : n[1];
-      const len = lane.drum ? 1 : n[2];
-      const pos = lane.drum ? n[0] / 2 : (hi - n[0]) / span;   // 0 = top row
-      el.style.left = `calc(${start / STEPS * 100}% + 1px)`;
-      el.style.width = `calc(${len / STEPS * 100}% - 2px)`;
-      el.style.height = "6px";
-      el.style.top = `calc(8px + ${pos} * (100% - 22px))`;
-      row.appendChild(el);
-      els.push({ el, start, len });
-    }
-    roll.append(name, row);
-  }
-
-  // Playback with WebAudio, started only from the button.
-  const btn = document.getElementById("play"), label = document.getElementById("play-label");
-  const icon = document.getElementById("play-icon"), head = document.getElementById("playhead");
-  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let ctx = null, playing = false, t0 = 0, raf = 0, nodes = [];
-  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
-
-  function voice(type, freq, at, dur, gain, cutoff) {
-    const o = ctx.createOscillator(), g = ctx.createGain(), f = ctx.createBiquadFilter();
-    o.type = type; o.frequency.value = freq;
-    f.type = "lowpass"; f.frequency.value = cutoff;
-    g.gain.setValueAtTime(0, at);
-    g.gain.linearRampToValueAtTime(gain, at + 0.012);
-    g.gain.exponentialRampToValueAtTime(gain * 0.55, at + Math.min(0.25, dur));
-    g.gain.setValueAtTime(gain * 0.55, at + dur);
-    g.gain.exponentialRampToValueAtTime(0.0001, at + dur + 0.18);
-    o.connect(f).connect(g).connect(ctx.destination);
-    o.start(at); o.stop(at + dur + 0.25);
-    nodes.push(o);
-  }
-  let noiseBuf = null;
-  function noise(at, dur, gain, type, freq) {
-    if (!noiseBuf) {
-      noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 0.5, ctx.sampleRate);
-      const d = noiseBuf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    }
-    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-    s.buffer = noiseBuf; f.type = type; f.frequency.value = freq;
-    g.gain.setValueAtTime(gain, at); g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-    s.connect(f).connect(g).connect(ctx.destination);
-    s.start(at); s.stop(at + dur + 0.05);
-    nodes.push(s);
-  }
-  function kick(at) {
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.frequency.setValueAtTime(130, at); o.frequency.exponentialRampToValueAtTime(42, at + 0.12);
-    g.gain.setValueAtTime(0.7, at); g.gain.exponentialRampToValueAtTime(0.0001, at + 0.35);
-    o.connect(g).connect(ctx.destination); o.start(at); o.stop(at + 0.4);
-    nodes.push(o);
-  }
-  function schedule(start, loops) {
-    for (let l = 0; l < loops; l++) {
-      const base = start + l * STEPS * STEP;
-      // a little human timing, like the app's humanizer
-      const late = () => (Math.random() - 0.3) * 0.012;
-      chords.forEach(([m, s, n]) => voice("triangle", hz(m), base + s * STEP + late(), n * STEP * 0.95, 0.05, 1800));
-      melody.forEach(([m, s, n]) => voice("square", hz(m), base + s * STEP + late(), n * STEP * 0.85, 0.035, 2400));
-      bass.forEach(([m, s, n]) => voice("sawtooth", hz(m), base + s * STEP + late(), n * STEP * 0.9, 0.09, 420));
-      drums.forEach(([r, s]) => {
-        const at = base + s * STEP + late();
-        if (r === 0) kick(at);
-        else if (r === 1) noise(at, 0.18, 0.28, "bandpass", 1800);
-        else noise(at, 0.05, s % 4 === 0 ? 0.08 : 0.045, "highpass", 7000);
-      });
-    }
-  }
-  const LOOPS = 2;
-  function frame() {
-    const step = (ctx.currentTime - t0) / STEP;
-    if (step >= STEPS * LOOPS) { stop(); return; }
-    const s = step % STEPS;
-    if (!reduce) head.style.left = `${s / STEPS * 100}%`;
-    for (const n of els) n.el.classList.toggle("on", s >= n.start && s < n.start + n.len);
-    raf = requestAnimationFrame(frame);
-  }
-  function start() {
-    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
-    ctx.resume();
-    t0 = ctx.currentTime + 0.08;
-    schedule(t0, LOOPS);
-    playing = true;
-    head.hidden = reduce;
-    btn.setAttribute("aria-pressed", "true");
-    label.textContent = "Stop";
-    icon.setAttribute("d", "M4 3h8v10H4z");
-    raf = requestAnimationFrame(frame);
-  }
-  function stop() {
-    nodes.forEach(n => { try { n.stop(); } catch (e) {} });
-    nodes = [];
-    cancelAnimationFrame(raf);
-    playing = false;
-    head.hidden = true;
-    els.forEach(n => n.el.classList.remove("on"));
-    btn.setAttribute("aria-pressed", "false");
-    label.textContent = "Play sketch";
-    icon.setAttribute("d", "M4 2.5v11l9-5.5z");
-  }
-  btn.addEventListener("click", () => (playing ? stop() : start()));
-
-  // Lead with the visitor's own system
-  const isWindows = /Windows/i.test(navigator.userAgent);
-  if (isWindows) {
-    const p = document.getElementById("dl-primary"), q = document.getElementById("dl-secondary");
-    [p.textContent, q.textContent] = [q.textContent, p.textContent];
-    [p.href, q.href] = [q.href, p.href];
-  }
-
-  // Copy buttons
-  document.querySelectorAll(".copy").forEach(b => b.addEventListener("click", () => {
-    const code = document.getElementById(b.dataset.copy);
-    const done = () => { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1600); };
-    navigator.clipboard?.writeText(code.textContent).then(done, () => {
-      const r = document.createRange(); r.selectNodeContents(code);
-      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
-    });
-  }));
-
-  // Theme toggle: system → dark → light
-  const root = document.documentElement, tbtn = document.getElementById("theme");
-  const order = ["system", "dark", "light"];
-  const apply = t => {
-    if (t === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", t);
-    tbtn.textContent = `Theme: ${t}`;
-  };
-  let theme = "system";
-  try { theme = localStorage.getItem("tonefold-theme") || "system"; } catch (e) {}
-  apply(theme);
-  tbtn.addEventListener("click", () => {
-    theme = order[(order.indexOf(theme) + 1) % order.length];
-    apply(theme);
-    try { localStorage.setItem("tonefold-theme", theme); } catch (e) {}
+(function(){
+  var root=document.documentElement;
+  var hdr=document.getElementById("top");
+  function sc(){hdr.classList.toggle("scrolled",window.scrollY>8)}sc();addEventListener("scroll",sc,{passive:true});
+  document.getElementById("theme").addEventListener("click",function(){
+    var n=root.getAttribute("data-theme")==="light"?"dark":"light";root.setAttribute("data-theme",n);
+    try{localStorage.setItem("tonefold-theme",n)}catch(e){}
+    var m=document.querySelector('meta[name="theme-color"]');if(m)m.content=n==="light"?"#F5F7F9":"#10151C";
   });
+  /* video facade */
+  var v=document.getElementById("video"),th=document.getElementById("vthumb");
+  th.addEventListener("error",function(){if(th.src.indexOf("hqdefault")<0)th.src="https://i.ytimg.com/vi/Ikx8j3tw9MI/hqdefault.jpg"});
+  v.querySelector(".facade").addEventListener("click",function(){
+    var f=document.createElement("iframe");
+    f.src="https://www.youtube-nocookie.com/embed/Ikx8j3tw9MI?autoplay=1";
+    f.title="Tonefold demo video";f.allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+    f.allowFullscreen=true;f.referrerPolicy="strict-origin-when-cross-origin";
+    v.innerHTML="";v.appendChild(f);f.focus();
+  });
+  /* tabs */
+  var tm=document.getElementById("tab-mac"),tw=document.getElementById("tab-win"),pm=document.getElementById("p-mac"),pw=document.getElementById("p-win");
+  function pick(os,focus){var m=os==="mac";
+    tm.setAttribute("aria-selected",m);tw.setAttribute("aria-selected",!m);tm.tabIndex=m?0:-1;tw.tabIndex=m?-1:0;
+    pm.hidden=!m;pw.hidden=m;if(focus)(m?tm:tw).focus()}
+  tm.onclick=function(){pick("mac")};tw.onclick=function(){pick("win")};
+  [tm,tw].forEach(function(t){t.addEventListener("keydown",function(e){
+    if(e.key==="ArrowRight"||e.key==="ArrowLeft"||e.key==="Home"||e.key==="End"){e.preventDefault();pick(t===tm?"win":"mac",true)}})});
+  pick(root.getAttribute("data-os")==="win"?"win":"mac");
+  /* copy */
+  document.querySelectorAll(".copy").forEach(function(b){b.addEventListener("click",function(){
+    var txt=b.getAttribute("data-copy");
+    function ok(){b.textContent="Copied";b.classList.add("done");setTimeout(function(){b.textContent="Copy";b.classList.remove("done")},1600)}
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(ok,fb)}else fb();
+    function fb(){var t=document.createElement("textarea");t.value=txt;t.style.position="fixed";t.style.opacity="0";document.body.appendChild(t);t.select();try{document.execCommand("copy");ok()}catch(e){}t.remove()}
+  })});
+  var cl=document.getElementById("copylink");
+  if(cl)cl.addEventListener("click",function(){var u="https://github.com/vkfolio/tonefold/releases/latest";
+    if(navigator.clipboard)navigator.clipboard.writeText(u).then(function(){cl.textContent="Copied"})})
 })();
 </script>
 </body>

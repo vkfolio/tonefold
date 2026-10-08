@@ -19,7 +19,7 @@
   <a href="https://github.com/vkfolio/tonefold/releases/latest"><img src="https://img.shields.io/github/v/release/vkfolio/tonefold?color=74DDC4" alt="release"></a>
 </p>
 
-Tonefold is a standalone app. It writes chords, melody, bass, drums and eight more layer kinds into
+Tonefold is a standalone app. It writes chords, melody, bass, drums and seven more layer kinds into
 a piano roll you can edit, plays them through built-in sounds, and exports MIDI, a mix and one WAV
 per layer. You don't need a DAW. If you use one, an optional CLAP/VST3 plugin puts the same
 composer inside it.
