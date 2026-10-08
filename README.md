@@ -17,6 +17,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-GPL--3.0-74DDC4" alt="GPL-3.0"></a>
   <a href="https://github.com/vkfolio/tonefold/actions/workflows/ci.yml"><img src="https://github.com/vkfolio/tonefold/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/vkfolio/tonefold/releases/latest"><img src="https://img.shields.io/github/v/release/vkfolio/tonefold?color=74DDC4" alt="release"></a>
+  <a href="https://www.producthunt.com/products/tonefold?utm_source=github&amp;utm_medium=readme"><img src="https://img.shields.io/badge/Product%20Hunt-Tonefold-FF6154?logo=producthunt&amp;logoColor=white" alt="Tonefold on Product Hunt"></a>
 </p>
 
 Tonefold is a standalone app. It writes chords, melody, bass, drums and seven more layer kinds into
