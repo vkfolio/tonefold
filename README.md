@@ -5,13 +5,15 @@
 <p align="center">
   An AI music composer app. Chat with Claude, get a whole song you can edit and hear, and take it anywhere: a DAW, MIDI or WAV.
 </p>
-
+<p align="center">
+  <a href="https://www.producthunt.com/products/tonefold?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tonefold" target="_blank" rel="noopener noreferrer"><img alt="Tonefold - Describe a song, get every part as editable MIDI | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1273345&amp;theme=light&amp;t=1791477421268"></a>
+</p>
 <p align="center">
   <a href="https://tonefold.vkfolio.com/">Website</a> ·
   <a href="https://github.com/vkfolio/tonefold/releases/latest">Download</a> ·
   <a href="docs/tutorial-twinkle.md">Tutorial</a> ·
   <a href="docs/usage.md">Docs</a>
-  <a href="https://www.producthunt.com/products/tonefold?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tonefold" target="_blank" rel="noopener noreferrer"><img alt="Tonefold - Describe a song, get every part as editable MIDI | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1273345&amp;theme=light&amp;t=1791477421268"></a>
+
 </p>
 
 <p align="center">
