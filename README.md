@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vkfolio.github.io/tonefold/">Website</a> ·
+  <a href="https://tonefold.vkfolio.com/">Website</a> ·
   <a href="https://github.com/vkfolio/tonefold/releases/latest">Download</a> ·
   <a href="docs/tutorial-twinkle.md">Tutorial</a> ·
   <a href="docs/usage.md">Docs</a>

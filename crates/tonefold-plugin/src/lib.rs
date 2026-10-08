@@ -128,7 +128,7 @@ fn hash_str(s: &str) -> u64 {
 impl Plugin for Tonefold {
     const NAME: &'static str = "Tonefold";
     const VENDOR: &'static str = "Tonefold";
-    const URL: &'static str = "https://vkfolio.github.io/tonefold/";
+    const URL: &'static str = "https://tonefold.vkfolio.com/";
     const EMAIL: &'static str = "me@vkfolio.com";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
