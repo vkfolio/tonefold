@@ -18,6 +18,8 @@
   <a href="https://github.com/vkfolio/tonefold/actions/workflows/ci.yml"><img src="https://github.com/vkfolio/tonefold/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/vkfolio/tonefold/releases/latest"><img src="https://img.shields.io/github/v/release/vkfolio/tonefold?color=74DDC4" alt="release"></a>
   <a href="https://www.producthunt.com/products/tonefold?utm_source=github&amp;utm_medium=readme"><img src="https://img.shields.io/badge/Product%20Hunt-Tonefold-FF6154?logo=producthunt&amp;logoColor=white" alt="Tonefold on Product Hunt"></a>
+
+<a href="https://www.producthunt.com/products/tonefold?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tonefold" target="_blank" rel="noopener noreferrer"><img alt="Tonefold - Describe a song, get every part as editable MIDI | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1273345&amp;theme=light&amp;t=1791477421268"></a>
 </p>
 
 Tonefold is a standalone app. It writes chords, melody, bass, drums and seven more layer kinds into
@@ -30,7 +32,7 @@ the CLAP and VST3 plugins are optional.
 
 ![The Tonefold editor](docs/images/editor.png)
 
-<a href="https://www.producthunt.com/products/tonefold?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-tonefold" target="_blank" rel="noopener noreferrer"><img alt="Tonefold - Describe a song, get every part as editable MIDI | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1273345&amp;theme=light&amp;t=1791477421268"></a>
+
 
 ## What it does
 
