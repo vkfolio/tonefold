@@ -12,9 +12,16 @@ use std::sync::{Arc, Mutex};
 
 pub use tonefold_core::playback::Event;
 
+/// Sources for `PlaybackBuffer::build`. Every rebuilt buffer gets a fresh, monotonically
+/// increasing generation, which the audio thread uses to report how far it has got (so replaced
+/// buffers are freed on the GUI thread, never on the audio thread).
+static NEXT_PLAYBACK_GEN: AtomicU64 = AtomicU64::new(1);
+
 /// Pre-rendered, sorted event list. Replaced atomically whenever the session changes.
 #[derive(Debug, Default)]
 pub struct PlaybackBuffer {
+    /// Monotonic build counter; see `NEXT_PLAYBACK_GEN` and `Shared::rebuild_playback`.
+    pub gen: u64,
     pub events: Vec<Event>,
     pub loop_start: u32,
     pub loop_end: u32,
@@ -28,7 +35,7 @@ pub struct PlaybackBuffer {
 impl PlaybackBuffer {
     pub fn build(session: &Session, loop_section: Option<&str>, muted: &[String]) -> PlaybackBuffer {
         let tl = tonefold_core::playback::timeline(session, loop_section, muted);
-        PlaybackBuffer { events: tl.events, loop_start: tl.loop_start, loop_end: tl.loop_end, tempo: tl.tempo, programs: tl.programs, bend_ranges: tl.bend_ranges }
+        PlaybackBuffer { gen: NEXT_PLAYBACK_GEN.fetch_add(1, Ordering::Relaxed), events: tl.events, loop_start: tl.loop_start, loop_end: tl.loop_end, tempo: tl.tempo, programs: tl.programs, bend_ranges: tl.bend_ranges }
     }
 }
 
@@ -80,6 +87,10 @@ pub struct Persisted {
 pub struct Shared {
     pub store: Arc<Mutex<Store>>,
     pub playback: Arc<ArcSwap<PlaybackBuffer>>,
+    /// Replaced buffers awaiting retirement.
+    pub playback_old: Mutex<Vec<Arc<PlaybackBuffer>>>,
+    /// The newest generation the audio thread has finished with.
+    pub playback_seen: AtomicU64,
     /// Transport commands from the GUI.
     pub playing: AtomicBool,
     pub sync_to_host: AtomicBool,
@@ -208,6 +219,8 @@ impl Shared {
         let shared = Shared {
             store,
             playback: Arc::new(ArcSwap::from_pointee(PlaybackBuffer::default())),
+            playback_old: Mutex::new(Vec::new()),
+            playback_seen: AtomicU64::new(0),
             playing: AtomicBool::new(false),
             sync_to_host: AtomicBool::new(false),
             loop_enabled: AtomicBool::new(true),
@@ -257,8 +270,23 @@ impl Shared {
             }
         }
         let buf = PlaybackBuffer::build(&session, loop_section.as_deref(), &muted);
-        self.playback.store(Arc::new(buf));
+        let new_arc = Arc::new(buf);
+        let prev = self.playback.swap(new_arc);
+        if let Ok(mut old) = self.playback_old.lock() {
+            old.push(prev);
+        }
         self.built_revision.store(revision, Ordering::Release);
+        self.retire_playback();
+    }
+
+    pub fn retire_playback(&self) {
+        let seen = self.playback_seen.load(Ordering::Acquire);
+        if let Ok(mut v) = self.playback_old.lock() {
+            let keep = v.iter().position(|b| b.gen >= seen).unwrap_or(v.len());
+            if keep > 0 {
+                v.drain(0..keep);
+            }
+        }
     }
 
     pub fn needs_rebuild(&self) -> bool {

@@ -64,9 +64,11 @@ pub struct EditorState {
     pub model: String,
     /// "claude" (the Claude Code login) or "ollama" (a server, local or remote).
     pub provider: String,
-    /// The Ollama server, and the edit buffer for it (committed when the field loses focus).
+    /// The Ollama server, and the edit buffer for it (committed live while typing).
     pub ollama_url: String,
     pub ollama_url_draft: String,
+    /// True while the URL field has keyboard focus, so agent events don't clobber the edit.
+    pub ollama_url_focused: bool,
     /// The Ollama model to run; "" until one is picked. Ollama has no default to fall back on.
     pub ollama_model: String,
     /// What the server said it can run (`list_models`), and how that went.
@@ -542,7 +544,9 @@ impl EditorState {
                     if let Some(url) = ollama_url.filter(|u| !u.is_empty()) {
                         if self.ollama_url == DEFAULT_OLLAMA_URL {
                             self.ollama_url = url.clone();
-                            self.ollama_url_draft = url;
+                            if !self.ollama_url_focused {
+                                self.ollama_url_draft = url;
+                            }
                         }
                     }
                     if self.provider == "ollama" && !providers.is_empty() && !providers.iter().any(|p| p == "ollama") {
@@ -557,7 +561,9 @@ impl EditorState {
                     if base_url != self.ollama_url && !base_url.is_empty() {
                         // The sidecar normalised what we sent (scheme, trailing slash); show that.
                         self.ollama_url = base_url.clone();
-                        self.ollama_url_draft = base_url;
+                        if !self.ollama_url_focused {
+                            self.ollama_url_draft = base_url;
+                        }
                     }
                     match error {
                         Some(e) => {
@@ -705,6 +711,9 @@ impl EditorState {
         let rev = shared.lock_store().revision;
         if shared.needs_rebuild() {
             shared.rebuild_playback();
+        } else {
+            // Reclaim replaced playback buffers (the audio thread keeps them safe until here).
+            shared.retire_playback();
         }
         if rev != self.last_persisted_revision {
             self.last_persisted_revision = rev;
@@ -780,6 +789,7 @@ fn initial_state(params: Arc<TonefoldParams>) -> EditorState {
         provider: "claude".into(),
         ollama_url: DEFAULT_OLLAMA_URL.into(),
         ollama_url_draft: DEFAULT_OLLAMA_URL.into(),
+        ollama_url_focused: false,
         ollama_model: String::new(),
         ollama_models: Vec::new(),
         models_status: String::new(),

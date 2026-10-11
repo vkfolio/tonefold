@@ -103,10 +103,19 @@ pub fn show(ui: &mut egui::Ui, st: &mut EditorState, shared: &Shared) {
             }
         }
         if ollama {
-            let url = ui.add(egui::TextEdit::singleline(&mut st.ollama_url_draft).desired_width(150.0 * st.ui_scale).hint_text("http://localhost:11434"))
+            // Keep the edit buffer in sync with the applied URL, except while the user is typing.
+            if !st.ollama_url_focused {
+                st.ollama_url_draft = st.ollama_url.clone();
+            }
+            let url = ui.add(egui::TextEdit::singleline(&mut st.ollama_url_draft).id_salt("ollama-url").desired_width(150.0 * st.ui_scale).hint_text("http://localhost:11434"))
                 .on_hover_text("Ollama server: localhost, or another machine on your network (set OLLAMA_HOST=0.0.0.0 there)");
+            st.ollama_url_focused = url.has_focus();
+            // Apply on every keystroke so the URL is live even without pressing Enter or clicking away.
+            if url.changed() {
+                st.ollama_url = st.ollama_url_draft.trim().to_string();
+            }
             let entered = url.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (url.lost_focus() || entered) && st.ollama_url_draft.trim() != st.ollama_url {
+            if url.lost_focus() || entered {
                 st.ollama_url = st.ollama_url_draft.trim().to_string();
                 st.ollama_url_draft = st.ollama_url.clone();
                 st.refresh_models(shared);

@@ -42,6 +42,9 @@ pub struct Tonefold {
     synth_l: Vec<f32>,
     synth_r: Vec<f32>,
     instance_id: u64,
+    /// arc-swap allocates a thread-local debt node on the first `load()` on a thread. The audio
+    /// thread is created fresh, so we pay that one-time allocation on the first block.
+    playback_warmed: bool,
 }
 
 static INSTANCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -114,6 +117,7 @@ impl Default for Tonefold {
             synth_l: Vec::new(),
             synth_r: Vec::new(),
             instance_id: INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            playback_warmed: false,
         }
     }
 }
@@ -198,7 +202,15 @@ impl Plugin for Tonefold {
 
         let n = buffer.samples() as u32;
         let output = self.params.output.value();
-        let buf = shared.playback.load();
+        // arc-swap borrows are allocation-free after the first one on a thread (that first call
+        // lazily allocates the thread-local debt slot), so `load()` — a Guard, not an owned Arc —
+        // is safe to build and drop inside the real-time callback.
+        let buf = if self.playback_warmed {
+            shared.playback.load()
+        } else {
+            self.playback_warmed = true;
+            util::permit_alloc(|| shared.playback.load())
+        };
         let sync = shared.sync_to_host.load(Ordering::Relaxed);
         let want_play = if sync { host_playing } else { shared.playing.load(Ordering::Relaxed) };
         let looping = shared.loop_enabled.load(Ordering::Relaxed);
@@ -380,10 +392,15 @@ impl Plugin for Tonefold {
             }
         }
 
+        let programs = buf.programs;
+        let bend_ranges = buf.bend_ranges;
+        let gen = buf.gen;
+        drop(buf);
+        shared.playback_seen.store(gen, Ordering::Release);
         for ch in buffer.as_slice() {
             ch.fill(0.0);
         }
-        self.render_synth(buffer, &buf.programs, &buf.bend_ranges, n as usize);
+        self.render_synth(buffer, &programs, &bend_ranges, n as usize);
         ProcessStatus::Normal
     }
 }
@@ -411,7 +428,7 @@ impl Tonefold {
             let mut settings = rustysynth::SynthesizerSettings::new(self.sample_rate as i32);
             settings.enable_reverb_and_chorus = true;
             settings.maximum_polyphony = 96;
-            if let Ok(s) = rustysynth::Synthesizer::new(&sf, &settings) {
+            if let Ok(s) = util::permit_alloc(|| rustysynth::Synthesizer::new(&sf, &settings)) {
                 self.synth = Some(s);
                 self.synth_programs = [255; 16];
             }

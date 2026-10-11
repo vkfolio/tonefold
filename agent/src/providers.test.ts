@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asProvider, DEFAULT_OLLAMA_URL, listOllamaModels, normalizeOllamaUrl, providerEnv } from "./providers.js";
+import { asProvider, DEFAULT_OLLAMA_URL, detectBackend, listOllamaModels, normalizeOllamaUrl, providerEnv } from "./providers.js";
 
 test("base URLs are normalised to what the CLI expects", () => {
   assert.equal(normalizeOllamaUrl(""), DEFAULT_OLLAMA_URL);
@@ -45,7 +45,30 @@ test("an unreachable server is an error a user can act on", async () => {
   const fetchImpl = (async () => {
     throw new TypeError("fetch failed");
   }) as unknown as typeof fetch;
-  await assert.rejects(listOllamaModels("http://nowhere:11434", fetchImpl), /could not reach http:\/\/nowhere:11434 .*Ollama running/);
+  await assert.rejects(listOllamaModels("http://nowhere:11434", fetchImpl), /could not reach http:\/\/nowhere:11434 .*model server .* running there/);
   const bad = (async () => new Response("nope", { status: 500 })) as typeof fetch;
   await assert.rejects(listOllamaModels("http://localhost:11434", bad), /answered 500/);
+});
+
+test("a server without /api/tags lists models through /v1/models instead", async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.endsWith("/api/tags")) return new Response("not found", { status: 404 });
+    assert.equal(u, "http://localhost:8080/v1/models");
+    return new Response(JSON.stringify({ data: [{ id: "local-model" }, { id: "gpt-oss:20b" }, { id: "local-model" }] }));
+  }) as typeof fetch;
+  assert.deepEqual(await listOllamaModels("localhost:8080", fetchImpl), ["gpt-oss:20b", "local-model"]);
+  assert.deepEqual(calls, ["http://localhost:8080/api/tags", "http://localhost:8080/v1/models"]);
+});
+
+test("detectBackend: native Ollama wins, Anthropic-native is used directly", async () => {
+  assert.equal(await detectBackend("localhost:11434", (async () => new Response(JSON.stringify({ models: [] }))) as typeof fetch), "ollama");
+  // /api/tags missing, /v1/messages answers with its own error (a 404 here would be "no such route").
+  const misses = (async (u: string | URL | Request) => (u.toString().endsWith("/api/tags") ? new Response("nope", { status: 404 }) : new Response("{}", { status: 500 }))) as typeof fetch;
+  assert.equal(await detectBackend("localhost:8080", misses), "anthropic");
+  // Both missing: fall back to the translating shim, which will surface the failure clearly.
+  const gone = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+  assert.equal(await detectBackend("localhost:8080", gone), "ollama");
 });

@@ -5,7 +5,7 @@ import { query, type SDKUserMessage, type Query } from "@anthropic-ai/claude-age
 import { makeServer, TOOL_NAMES } from "./tools.js";
 import { systemPrompt, AGENT_ROOT } from "./prompt.js";
 import type { AgentMessage, ClientMessage, Mode, Phase, Plan, Provider, Rpc } from "./protocol.js";
-import { asProvider, DEFAULT_OLLAMA_URL, listOllamaModels, normalizeOllamaUrl, providerEnv, PROVIDERS } from "./providers.js";
+import { asProvider, DEFAULT_OLLAMA_URL, detectBackend, listOllamaModels, normalizeOllamaUrl, providerEnv, PROVIDERS, type Backend } from "./providers.js";
 import { DEFAULT_NUM_CTX, startShim, type Shim } from "./ollama-shim.js";
 import { checklist, decisionResult, foregroundAgents, ProducerRun, READ_TOOLS, toolFence } from "./producer.js";
 import { SPECIALISTS } from "./specialists.js";
@@ -77,6 +77,9 @@ class Connection implements Rpc {
   private baseUrl = OLLAMA_URL;
   /** The forwarder the CLI is pointed at when the provider is Ollama (see ollama-shim.ts). */
   private shim: Shim | null = null;
+  /** The server's chat API, and the origin it was detected for (a URL change re-detects). */
+  private backend: Backend | null = null;
+  private backendOrigin: string | null = null;
   /**
    * Whether the model may think; undefined is the provider's default (Claude: yes, Ollama: no).
    * For Ollama the shim reads it per request; for Claude it is fixed when the query is created,
@@ -240,7 +243,24 @@ class Connection implements Rpc {
   private async cliBaseUrl(): Promise<string> {
     if (this.provider !== "ollama") return this.baseUrl;
     const target = normalizeOllamaUrl(this.baseUrl);
-    if (this.shim && this.shim.target !== new URL(target).origin) {
+    const origin = new URL(target).origin;
+    // Which API the server speaks is a property of the server; ask once per origin.
+    if (this.backendOrigin !== origin) {
+      this.backendOrigin = origin;
+      this.backend = null;
+    }
+    if (this.backend === null) this.backend = await detectBackend(target);
+    if (this.backend === "anthropic") {
+      // It already speaks the Anthropic Messages API (llama.cpp's server, for one): the CLI talks
+      // to it directly, no translation in between.
+      if (this.shim) {
+        this.shim.close();
+        this.shim = null;
+      }
+      log(`ollama ${target} is Anthropic-native: no shim`);
+      return target;
+    }
+    if (this.shim && this.shim.target !== origin) {
       this.shim.close();
       this.shim = null;
     }
